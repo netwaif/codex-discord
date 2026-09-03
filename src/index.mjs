@@ -7,8 +7,8 @@ import { SessionStore } from './sessions.mjs';
 import { runCodexTurn, killActiveCodexChildren } from './codex.mjs';
 import { runAgyTurn, killActiveAgyChildren } from './agy.mjs';
 import { chunkMessage } from './chunk.mjs';
-import { pasteToPane, capturePane, extractSessionId, paneCurrentCommand, paneHasCodex, UUID_RE } from './tmux.mjs';
-import { findRolloutById, findRolloutByCwd, RolloutTail } from './rollout.mjs';
+import { pasteToPane, paneCurrentCommand, paneHasCodex, UUID_RE } from './tmux.mjs';
+import { findRolloutByCwd, RolloutTail } from './rollout.mjs';
 import { classifyMessage, ContextQueue } from './routing.mjs';
 import { extractAttachmentMarkers, resolveUploadPath, saveIncomingAttachments } from './attachments.mjs';
 
@@ -140,23 +140,13 @@ async function ensureTuiTail(channel) {
     const cmd = await paneCurrentCommand(TUI_PANE);
     throw new Error(`TUI pane(${TUI_PANE})에서 codex 프로세스를 찾지 못함(현재: ${cmd}) — 셸에 명령이 입력되는 것을 막기 위해 중단`);
   }
-  // 세션 특정: 화면 UUID(버전·로컬 설정에 따라 표시되지 않음 — v0.146.0 기본
-  // 설정에서 무표시, 2026-08-05 E2E 실측)를 1순위, 롤아웃 session_meta.cwd
-  // 매칭을 2순위 검출원으로 쓴다.
-  const sid = extractSessionId(await capturePane(TUI_PANE));
-  let file;
-  if (sid) {
-    if (sid === tuiSessionId && tuiTail) return;
-    file = await findRolloutById(sid);
-    if (!file) throw new Error(`세션 ${sid}의 롤아웃 파일이 아직 없음 — TUI에서 메시지를 한 번 보낸 뒤 다시 시도하세요`);
-  } else {
-    const hit = await findRolloutByCwd(WORKDIR);
-    if (!hit) throw new Error(`codex 세션을 특정하지 못함 — 화면에 UUID가 없고 cwd(${WORKDIR}) 일치 롤아웃도 없음. TUI에서 메시지를 한 번 보낸 뒤 다시 시도하세요`);
-    file = hit.file;
-  }
-  // pane 폭이 좁으면 sid가 잘린 접두어일 수 있다 — 파일명의 전체 UUID로 정규화해야
-  // 다음 호출의 캐시 비교가 성립해 tail을 불필요하게 재시작하지 않는다.
-  const fullSid = file.match(UUID_RE)?.[0] ?? sid;
+  // 세션 특정: 롤아웃 session_meta.cwd 매칭 단일 검출원. 화면 UUID 스크레이핑은
+  // 폐기(2026-09-03) — v0.146.0+ 기본 설정은 상태바에 UUID를 안 띄우고, 채팅 본문에
+  // 인용된 guardian 세션 UUID를 세션 ID로 오인해 tail이 엉뚱한 파일로 갈아탔다.
+  const hit = await findRolloutByCwd(WORKDIR);
+  if (!hit) throw new Error(`codex 세션을 특정하지 못함 — cwd(${WORKDIR}) 일치 롤아웃이 없음. TUI에서 메시지를 한 번 보낸 뒤 다시 시도하세요`);
+  const { file } = hit;
+  const fullSid = hit.sid ?? file.match(UUID_RE)?.[0];
   if (fullSid === tuiSessionId && tuiTail) return;
   tuiTail?.stop();
   tuiSessionId = fullSid;

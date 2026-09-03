@@ -29,23 +29,7 @@ export async function paneCurrentCommand(pane) {
   return stdout.trim();
 }
 
-export async function capturePane(pane) {
-  const { stdout } = await run('tmux', ['capture-pane', '-p', '-t', pane]);
-  return stdout;
-}
-
 export const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
-
-// pane 폭이 좁으면 codex 상태바가 UUID를 말줄임(…)으로 자른다(2026-08-03 실측:
-// 106칸에서 019fc493-1b7a-7480-bc45-203c…). 앞 4그룹(23자)까지 보이면 롤아웃
-// 파일명 부분 일치로 세션을 특정하기에 충분하다 — 그보다 짧으면 같은 밀리초에
-// 뜬 다른 세션과 혼동될 수 있어 매칭하지 않는다.
-const UUID_PREFIX_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}(?:-[0-9a-f]{1,12})?(?=…)/g;
-
-export function extractSessionId(paneText) {
-  const m = paneText.match(UUID_RE) || paneText.match(UUID_PREFIX_RE);
-  return m ? m[m.length - 1] : null;
-}
 
 // pane 프로세스 트리에 codex가 실존하는가 — 순수 판정부.
 // npm 배포판 codex는 `#!/usr/bin/env node` 런처라 pane_current_command가 node로

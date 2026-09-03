@@ -8,19 +8,6 @@ async function listSorted(dir) {
   return (await readdir(dir)).sort().reverse(); // 최근(큰 값) 우선
 }
 
-export async function findRolloutById(sessionId, root = SESSIONS_ROOT) {
-  try {
-    for (const y of await listSorted(root))
-      for (const m of await listSorted(join(root, y)))
-        for (const d of await listSorted(join(root, y, m)))
-          for (const f of await readdir(join(root, y, m, d)))
-            if (f.includes(sessionId)) return join(root, y, m, d, f);
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
-  }
-  return null;
-}
-
 async function readSessionMeta(file) {
   // session_meta 첫 줄은 instructions가 실려 수십 KB에 달한다(2026-08-05 실측
   // 18,450B — 4KB 고정 읽기는 잘린 JSON 파싱 실패로 전 파일을 건너뛰었다).
@@ -56,6 +43,24 @@ async function readSessionMeta(file) {
 // 롤아웃 첫 줄 session_meta(cwd·session_id)로 세션을 특정하는 안정 검출원.
 // 최신 파일 우선 — 같은 cwd의 옛 세션이 남아 있어도 현재 세션이 이긴다
 // (tui-up.sh가 기동 직후 더미 턴으로 현재 세션의 롤아웃 존재를 보장한다).
+//
+// 단, TUI가 같은 cwd로 띄우는 보조 세션(guardian 승인 검토 등)은 제외한다 —
+// 2026-09-03 실측: 12:07 guardian_review 롤아웃이 파일명 시각으로 더 뒤라 tail이
+// 그쪽으로 갈아타 답변·첨부 릴레이가 끊겼다. 사용자 세션의 session_meta는
+// source="cli"(문자열)·thread_source="user"(0.130+) 또는 없음(0.125~0.128).
+// 보조 세션은 source가 객체({subagent:...})이고 thread_source가
+// subagent(0.130~0.141)·guardian_review(0.152)·없음(0.128)으로 흔들리므로
+// "source가 객체" 또는 "thread_source가 있는데 user가 아님" 둘 중 하나면 제외.
+function auxiliaryReason(meta) {
+  if (meta.source !== null && typeof meta.source === 'object') {
+    return `source=${JSON.stringify(meta.source)}`;
+  }
+  if (meta.thread_source != null && meta.thread_source !== 'user') {
+    return `thread_source=${meta.thread_source}`;
+  }
+  return null;
+}
+
 export async function findRolloutByCwd(cwd, root = SESSIONS_ROOT) {
   try {
     for (const y of await listSorted(root))
@@ -64,7 +69,14 @@ export async function findRolloutByCwd(cwd, root = SESSIONS_ROOT) {
           for (const f of (await readdir(join(root, y, m, d))).sort().reverse()) {
             const file = join(root, y, m, d, f);
             const meta = await readSessionMeta(file);
-            if (meta?.cwd === cwd) return { file, sid: meta.session_id ?? meta.id ?? null };
+            if (meta?.cwd !== cwd) continue;
+            const reason = auxiliaryReason(meta);
+            if (reason) {
+              console.log(`롤아웃 제외(보조 세션): ${f} — ${reason}`);
+              continue;
+            }
+            console.log(`롤아웃 선택(cwd 일치, 사용자 세션): ${f} — source=${JSON.stringify(meta.source ?? null)} thread_source=${meta.thread_source ?? '(없음)'}`);
+            return { file, sid: meta.session_id ?? meta.id ?? null };
           }
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;

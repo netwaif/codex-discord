@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile, mkdtemp, writeFile, appendFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { findRolloutById, extractAgentMessages, RolloutTail } from '../src/rollout.mjs';
+import { extractAgentMessages, RolloutTail } from '../src/rollout.mjs';
 
 test('실물 픽스처에서 assistant 메시지를 뽑는다 (구포맷 event_msg 공존해도 중복 없음)', async () => {
   const jsonl = await readFile(new URL('./fixtures/rollout-sample.jsonl', import.meta.url), 'utf8');
@@ -20,16 +20,6 @@ test('JSON 아닌 줄·다른 타입·구포맷 event_msg는 무시', () => {
     '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"답변1"}]}}',
   ].join('\n');
   assert.deepEqual(extractAgentMessages(jsonl), ['답변1']);
-});
-
-test('findRolloutById: 날짜 트리에서 세션 파일을 찾는다', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'sess-root-'));
-  const day = join(root, '2026', '07', '23');
-  await mkdir(day, { recursive: true });
-  const f = join(day, 'rollout-2026-07-23T00-00-00-abc-123.jsonl');
-  await writeFile(f, '');
-  assert.equal(await findRolloutById('abc-123', root), f);
-  assert.equal(await findRolloutById('없는-세션', root), null);
 });
 
 test('RolloutTail: 시작 이후 append된 agent_message만, 줄 경계 분할도 안전', async () => {
@@ -108,4 +98,37 @@ test('findRolloutByCwd: session_meta 첫 줄이 4KB를 넘어도 파싱한다 (2
   await writeFile(join(day, 'rollout-2026-08-05T12-00-00-dddddddd-1111-2222-3333-444444444444.jsonl'), line);
   const hit = await findRolloutByCwd('/big/work', root);
   assert.equal(hit?.sid, 'dddddddd-1111-2222-3333-444444444444');
+});
+
+test('findRolloutByCwd: 같은 cwd의 guardian/subagent 롤아웃이 더 최신이어도 사용자 TUI 세션을 고른다 (2026-09-03 실측 — 12:07 tail이 guardian_review로 전환)', async () => {
+  const { findRolloutByCwd } = await import('../src/rollout.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'sess-root-'));
+  const day = join(root, '2026', '09', '03');
+  await mkdir(day, { recursive: true });
+  const meta = (sid, extra) => JSON.stringify({ type: 'session_meta', payload: { session_id: sid, cwd: '/w', ...extra } }) + '\n';
+  // main: 0.152 사용자 세션 — 파일명 시각이 가장 앞
+  await writeFile(join(day, 'rollout-2026-09-03T11-23-05-01a06513-b3d4-74e0-8f7a-4f2a6c0ec9dc.jsonl'),
+    meta('01a06513-b3d4-74e0-8f7a-4f2a6c0ec9dc', { source: 'cli', thread_source: 'user' }));
+  // 0.152 guardian 승인 검토 세션
+  await writeFile(join(day, 'rollout-2026-09-03T12-07-00-01a06513-b562-7360-8c63-997e59bfe3d8.jsonl'),
+    meta('01a06513-b562-7360-8c63-997e59bfe3d8', { source: { subagent: { other: 'guardian' } }, thread_source: 'guardian_review' }));
+  // 0.130~0.141 형식: thread_source=subagent
+  await writeFile(join(day, 'rollout-2026-09-03T12-08-00-01a06513-c000-7000-8000-000000000001.jsonl'),
+    meta('01a06513-c000-7000-8000-000000000001', { source: { subagent: { other: 'guardian' } }, thread_source: 'subagent' }));
+  // 0.128 형식: thread_source 없음, source만 객체
+  await writeFile(join(day, 'rollout-2026-09-03T12-09-00-01a06513-c000-7000-8000-000000000002.jsonl'),
+    meta('01a06513-c000-7000-8000-000000000002', { source: { subagent: { other: 'guardian' } } }));
+  const hit = await findRolloutByCwd('/w', root);
+  assert.equal(hit?.sid, '01a06513-b3d4-74e0-8f7a-4f2a6c0ec9dc');
+});
+
+test('findRolloutByCwd: 구버전(0.125~0.128) 사용자 세션은 thread_source 없이 source=cli — 여전히 선택된다', async () => {
+  const { findRolloutByCwd } = await import('../src/rollout.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'sess-root-'));
+  const day = join(root, '2026', '09', '03');
+  await mkdir(day, { recursive: true });
+  const line = JSON.stringify({ type: 'session_meta', payload: { session_id: 'eeeeeeee-1111-2222-3333-444444444444', cwd: '/old', source: 'cli' } }) + '\n';
+  await writeFile(join(day, 'rollout-2026-09-03T10-00-00-eeeeeeee-1111-2222-3333-444444444444.jsonl'), line);
+  const hit = await findRolloutByCwd('/old', root);
+  assert.equal(hit?.sid, 'eeeeeeee-1111-2222-3333-444444444444');
 });
