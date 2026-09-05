@@ -55,8 +55,10 @@ fi
 # (2026-08-05 E2E, 2/2 재현: insecure directories 프롬프트가 '/'를 응답으로 소비).
 # codex가 종료하면 pane·세션도 닫힌다 — 재기동은 이 스크립트 재실행(멱등).
 # PATH 전파: env 셔뱅(#!/usr/bin/env node)이 tmux 서버 환경에서도 node를 찾도록.
+# 기존 tmux 서버의 maxfiles=256 상속을 피하도록 pane 안에서 soft limit을 올린다.
+# 바깥 기동 스크립트에서만 ulimit을 바꾸면 기존 서버의 자식에는 적용되지 않는다.
 $TMUX_BIN new-session -d -s "$SESSION" -c "$CODEX_WORKDIR" -x 200 -y 50 \
-  "PATH=\"$PATH\" exec $CODEX_CMD"
+  "ulimit -Sn 8192 && PATH=\"$PATH\" exec $CODEX_CMD"
 log "codex TUI 직접 기동 (셸 비경유)"
 
 # 세션 특정은 화면 UUID가 아니라 롤아웃 파일 session_meta(cwd)로 한다 —
