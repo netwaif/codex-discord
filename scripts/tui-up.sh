@@ -34,6 +34,9 @@ fi
 PANE="${TUI_PANE:-codex-live:0.0}"
 SESSION="${PANE%%:*}"
 CODEX_CMD="$CODEX_BIN -s workspace-write -c sandbox_workspace_write.network_access=true"
+# 프레시 설치에서 codex hooks 신뢰 프롬프트가 무인 봇 기동을 막는다 — 훅은 사용자 자신의 설치분이라
+# 자동화용 공식 플래그로 넘긴다(디렉터리 신뢰는 install.sh가 config.toml에 선등록). 2026-09-07 실측.
+[[ -f "$HOME/.codex/hooks.json" ]] && CODEX_CMD="$CODEX_CMD --dangerously-bypass-hook-trust"
 
 log() { echo "[$(date '+%F %T')] $*"; }
 

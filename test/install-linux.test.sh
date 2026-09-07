@@ -26,6 +26,16 @@ done
 grep -q 'Restart=always' "$U/codex-discord-daemon.service" || { echo "FAIL: daemon Restart=always 없음"; exit 1; }
 grep -q -- '--env-file=.env.gemini' "$U/codex-discord-gemini.service" || { echo "FAIL: gemini env-file"; exit 1; }
 grep -q 'tui-up.sh' "$U/codex-discord-tui.service" || { echo "FAIL: tui ExecStart"; exit 1; }
+# codex 신뢰 선등록(양 OS 공통) — config.toml에 작업폴더 프로젝트 블록
+CFG="$TMP/.codex/config.toml"
+grep -qF "[projects.\"$TMP/work\"]" "$CFG" || { echo "FAIL: codex 신뢰 미등록"; cat "$CFG"; exit 1; }
+grep -q 'trust_level = "trusted"' "$CFG" || { echo "FAIL: trust_level"; exit 1; }
+# 멱등: 재실행해도 블록이 하나만
+HOME="$TMP" HARNESS_OS=Linux DRY_RUN=1 PATH="$TMP/bin:$PATH" bash "$PROJ/scripts/install.sh" >/dev/null 2>&1
+[[ $(grep -cF "[projects.\"$TMP/work\"]" "$CFG") -eq 1 ]] || { echo "FAIL: 신뢰 블록 중복"; exit 1; }
+# tui-up이 hooks 우회 플래그를 붙이는지(hooks.json 있을 때)
+mkdir -p "$TMP/.codex"; echo '{}' > "$TMP/.codex/hooks.json"
+grep -q 'dangerously-bypass-hook-trust' "$PROJ/scripts/tui-up.sh" || { echo "FAIL: tui-up 훅 우회 플래그 없음"; exit 1; }
 grep -q 'RemainAfterExit=yes' "$U/codex-discord-tui.service" || { echo "FAIL: tui oneshot"; exit 1; }
 [[ ! -d "$TMP/Library/LaunchAgents" ]] || { echo "FAIL: 리눅스에서 LaunchAgents 생성"; exit 1; }
 [[ -f "$TMP/work/AGENTS.md" ]] || { echo "FAIL: 워크스페이스 AGENTS.md"; exit 1; }

@@ -46,6 +46,26 @@ if [[ ! -d "$PROJECT_DIR/node_modules" ]]; then
   (cd "$PROJECT_DIR" && npm install --omit=dev)
 fi
 mkdir -p "$PROJECT_DIR/logs" "$CODEX_WORKDIR"
+
+# codex TUI 봇은 무인 기동이라 첫 실행 프롬프트에서 멈추면 시작 자체가 안 된다(2026-09-07 실측).
+# 작업 폴더를 codex 신뢰 목록(~/.codex/config.toml)에 선등록한다 — 섹션은 파일 끝에 붙이므로 안전·멱등.
+# (hooks 신뢰는 tui-up.sh가 --dangerously-bypass-hook-trust로 넘긴다.)
+ensure_codex_trust() {
+  local wd="$1" cfg="$HOME/.codex/config.toml" key
+  key="[projects.\"$wd\"]"
+  mkdir -p "$HOME/.codex"
+  if [[ -f "$cfg" ]] && grep -qF "$key" "$cfg"; then return 0; fi
+  if [[ -f "$cfg" ]]; then
+    cp "$cfg" "$cfg.codex-discord.bak"
+    [[ -s "$cfg" && -n "$(tail -c1 "$cfg")" ]] && printf '\n' >> "$cfg"   # 개행으로 안 끝나면 먼저 개행
+    printf '\n%s\ntrust_level = "trusted"\n' "$key" >> "$cfg"
+  else
+    printf '%s\ntrust_level = "trusted"\n' "$key" > "$cfg"
+  fi
+  chmod 600 "$cfg"
+  log "codex 신뢰 등록: $wd (~/.codex/config.toml)"
+}
+ensure_codex_trust "$CODEX_WORKDIR"
 if [[ ! -f "$CODEX_WORKDIR/AGENTS.md" ]]; then
   cp "$PROJECT_DIR/templates/AGENTS.md" "$CODEX_WORKDIR/AGENTS.md"
   log "워크스페이스 AGENTS.md 설치: $CODEX_WORKDIR/AGENTS.md"
