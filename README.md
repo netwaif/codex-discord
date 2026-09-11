@@ -57,7 +57,9 @@ headless 대신 살아있는 codex TUI 세션과 연결된다.
 
 동작 방식: 첫 턴은 `agy --new-project`로 작업폴더를 워크스페이스로 잡고, 이후 `--conversation <id>`로 채널별 대화를 이어간다.
 도구 실행은 `--sandbox` 안에서 자동 승인된다 (headless는 승인 프롬프트를 띄울 수 없어 필수).
-라이브 TUI 모드는 codex 전용 — agy 인스턴스에서 TUI 변수는 무시된다.
+라이브 TUI 모드는 agy 인스턴스에서도 된다(v0.1.9) — `.env.gemini`에 `TUI_PANE`·`TUI_CHANNEL_ID`를 넣고 `bash scripts/tui-up.sh .env.gemini`로 TUI를 띄운다.
+agy는 대화별 `~/.gemini/antigravity-cli/brain/<대화ID>/.system_generated/logs/transcript.jsonl`을 실시간으로 쓰므로 데몬이 그 파일을 tail해 답변을 중계한다(codex의 롤아웃 tail과 같은 구조).
+대화 ID는 pane 프로세스가 쥔 `presence/<대화ID>.lock` → 배너의 `--conversation=` → brain 최신 디렉터리 순으로 찾는다. TUI는 `--dangerously-skip-permissions`로 기동된다(무인 pane에서 승인 프롬프트가 중계를 막으므로).
 
 참고: Gemini CLI(공식 `gemini`)는 개인 OAuth 지원이 종료되어(IneligibleTierError) 엔진으로 채택하지 않았다 (2026-07-24 실측).
 

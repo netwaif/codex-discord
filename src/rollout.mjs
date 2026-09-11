@@ -106,9 +106,11 @@ export function extractAgentMessages(jsonlChunk) {
 }
 
 export class RolloutTail {
-  constructor(filePath, { intervalMs = 700 } = {}) {
+  // extract: JSONL 청크 → 중계할 본문 배열. 기본은 codex 롤아웃, agy는 transcript 추출기를 넘긴다.
+  constructor(filePath, { intervalMs = 700, extract = extractAgentMessages } = {}) {
     this.filePath = filePath;
     this.intervalMs = intervalMs;
+    this.extract = extract;
     this.offset = 0;
     this.remainder = '';
     this.timer = null;
@@ -140,7 +142,7 @@ export class RolloutTail {
           const lastNl = text.lastIndexOf('\n');
           const complete = lastNl === -1 ? '' : text.slice(0, lastNl + 1);
           this.remainder = lastNl === -1 ? text : text.slice(lastNl + 1);
-          for (const msg of extractAgentMessages(complete)) await onAgentMessage(msg);
+          for (const msg of this.extract(complete)) await onAgentMessage(msg);
         }
       } catch {
         // 일시적 stat/read 실패는 다음 폴에서 재시도

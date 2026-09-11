@@ -7,8 +7,9 @@ import { SessionStore } from './sessions.mjs';
 import { runCodexTurn, killActiveCodexChildren } from './codex.mjs';
 import { runAgyTurn, killActiveAgyChildren } from './agy.mjs';
 import { chunkMessage } from './chunk.mjs';
-import { pasteToPane, paneCurrentCommand, paneHasCodex, UUID_RE } from './tmux.mjs';
+import { pasteToPane, paneCurrentCommand, paneHasEngine, UUID_RE } from './tmux.mjs';
 import { findRolloutByCwd, RolloutTail } from './rollout.mjs';
+import { findConversationByPane, extractPlannerResponses } from './agy-transcript.mjs';
 import { classifyMessage, ContextQueue } from './routing.mjs';
 import { extractAttachmentMarkers, resolveUploadPath, saveIncomingAttachments } from './attachments.mjs';
 
@@ -61,8 +62,9 @@ await writeFile(LOCK_PATH, String(process.pid));
 
 const TUI_PANE = process.env.TUI_PANE || null;            // 예: codex-live:0.0
 const TUI_CHANNEL_ID = process.env.TUI_CHANNEL_ID || null;
-// 라이브 TUI 모드는 codex 전용 (agy는 롤아웃 파일이 없어 tail 불가)
-const TUI_ENABLED = Boolean(TUI_PANE && TUI_CHANNEL_ID && ENGINE === 'codex');
+// 라이브 TUI 모드: codex는 롤아웃, agy는 transcript.jsonl을 tail한다(2026-09-11 agy 지원 —
+// "agy는 롤아웃이 없어 불가"는 검증 없는 가정이었다. agy-transcript.mjs 참조).
+const TUI_ENABLED = Boolean(TUI_PANE && TUI_CHANNEL_ID);
 // TUI 채널이 이 봇 전용이면 off — 호명(멘션·TRIGGER_NAME) 없이 모든 메시지에 응답.
 // 기본 on = 기존 동작(공유 수다 채널을 TUI 채널로 쓰는 배치의 호명 게이트) 유지.
 const TUI_TRIGGER_GATE = (process.env.TUI_TRIGGER_GATE ?? 'on') !== 'off';
@@ -131,26 +133,33 @@ async function withAttachments(message, content) {
   return content;
 }
 
-// TUI pane의 현재 codex 세션을 찾아 롤아웃 tail을 연결한다.
-// pane에서 codex를 재시작해 세션이 바뀌면 tail도 갈아탄다.
+// TUI pane의 현재 엔진 세션을 찾아 파일 tail을 연결한다.
+// pane에서 엔진을 재시작해 세션이 바뀌면 tail도 갈아탄다.
+// codex: 롤아웃 session_meta.cwd 매칭 단일 검출원. 화면 UUID 스크레이핑은
+//   폐기(2026-09-03) — v0.146.0+ 기본 설정은 상태바에 UUID를 안 띄우고, 채팅 본문에
+//   인용된 guardian 세션 UUID를 세션 ID로 오인해 tail이 엉뚱한 파일로 갈아탔다.
+// agy: presence 락(pane PID) → 배너 → brain 최신 순으로 대화 ID를 특정한다.
 async function ensureTuiTail(channel) {
   // npm 배포판은 codex가 node 런처라 pane_current_command만으로는 오탐한다
-  // (2026-08-05 E2E 실측) — pane 프로세스 트리에서 codex 실존을 본다.
-  if (!(await paneHasCodex(TUI_PANE))) {
+  // (2026-08-05 E2E 실측) — pane 프로세스 트리에서 엔진 실존을 본다.
+  if (!(await paneHasEngine(TUI_PANE, ENGINE))) {
     const cmd = await paneCurrentCommand(TUI_PANE);
-    throw new Error(`TUI pane(${TUI_PANE})에서 codex 프로세스를 찾지 못함(현재: ${cmd}) — 셸에 명령이 입력되는 것을 막기 위해 중단`);
+    throw new Error(`TUI pane(${TUI_PANE})에서 ${ENGINE} 프로세스를 찾지 못함(현재: ${cmd}) — 셸에 명령이 입력되는 것을 막기 위해 중단`);
   }
-  // 세션 특정: 롤아웃 session_meta.cwd 매칭 단일 검출원. 화면 UUID 스크레이핑은
-  // 폐기(2026-09-03) — v0.146.0+ 기본 설정은 상태바에 UUID를 안 띄우고, 채팅 본문에
-  // 인용된 guardian 세션 UUID를 세션 ID로 오인해 tail이 엉뚱한 파일로 갈아탔다.
-  const hit = await findRolloutByCwd(WORKDIR);
-  if (!hit) throw new Error(`codex 세션을 특정하지 못함 — cwd(${WORKDIR}) 일치 롤아웃이 없음. TUI에서 메시지를 한 번 보낸 뒤 다시 시도하세요`);
+  const hit = ENGINE === 'agy'
+    ? await findConversationByPane(TUI_PANE)
+    : await findRolloutByCwd(WORKDIR);
+  if (!hit) {
+    throw new Error(ENGINE === 'agy'
+      ? `agy 대화를 특정하지 못함 — pane(${TUI_PANE})의 presence 락·배너·brain 최신 모두 실패. TUI에서 메시지를 한 번 보낸 뒤 다시 시도하세요`
+      : `codex 세션을 특정하지 못함 — cwd(${WORKDIR}) 일치 롤아웃이 없음. TUI에서 메시지를 한 번 보낸 뒤 다시 시도하세요`);
+  }
   const { file } = hit;
   const fullSid = hit.sid ?? file.match(UUID_RE)?.[0];
   if (fullSid === tuiSessionId && tuiTail) return;
   tuiTail?.stop();
   tuiSessionId = fullSid;
-  tuiTail = new RolloutTail(file);
+  tuiTail = new RolloutTail(file, ENGINE === 'agy' ? { extract: extractPlannerResponses } : {});
   // 콜백이 캡처하는 channel은 최초 연결 시점의 것 — TUI 채널이 단일 고정이라 안전
   await tuiTail.start((text) => relayReply(channel, text));
   console.log(`TUI tail 연결: 세션 ${fullSid}`);

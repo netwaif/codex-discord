@@ -39,3 +39,20 @@ test('treeHasCodex: 다른 트리의 codex는 무시 (pane 자손만 판정)', a
   ].join('\n');
   assert.equal(treeHasCodex(ps, '964'), false);
 });
+
+test('treeHasEngine(agy): Go 단일 바이너리 — pane 루트 argv0 basename이 agy면 참', async () => {
+  const { treeHasEngine } = await import('../src/tmux.mjs');
+  const ps = ' 7001     1 /Users/t/.local/bin/agy --dangerously-skip-permissions';
+  assert.equal(treeHasEngine(ps, '7001', 'agy'), true);
+  assert.equal(treeHasEngine(ps, '7001', 'codex'), false);
+});
+
+test('treeHasEngine(agy): 셸 루트 아래 자손에 agy가 있어도 참, 없으면 거짓', async () => {
+  const { treeHasEngine } = await import('../src/tmux.mjs');
+  const ps = [
+    ' 7000     1 -zsh',
+    ' 7001  7000 agy',
+  ].join('\n');
+  assert.equal(treeHasEngine(ps, '7000', 'agy'), true);
+  assert.equal(treeHasEngine(' 7000     1 -zsh', '7000', 'agy'), false);
+});

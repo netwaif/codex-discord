@@ -25,18 +25,31 @@ if [[ -z "$TMUX_BIN" ]]; then
   exit 1
 fi
 
-CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
-if [[ -z "$CODEX_BIN" || ! -x "$CODEX_BIN" ]]; then
-  echo "오류: codex를 찾을 수 없음 — .env에 CODEX_BIN을 지정하거나 PATH에 codex를 두세요" >&2
-  exit 1
-fi
+# 엔진: codex(기본) | agy — .env의 ENGINE. 아래 ENGINE_CMD·준비 판정·세션 검출원이 엔진별로 갈린다.
+ENGINE="${ENGINE:-codex}"
 : "${CODEX_WORKDIR:?오류: .env에 CODEX_WORKDIR 필요}"
 PANE="${TUI_PANE:-codex-live:0.0}"
 SESSION="${PANE%%:*}"
-CODEX_CMD="$CODEX_BIN -s workspace-write -c sandbox_workspace_write.network_access=true"
-# 프레시 설치에서 codex hooks 신뢰 프롬프트가 무인 봇 기동을 막는다 — 훅은 사용자 자신의 설치분이라
-# 자동화용 공식 플래그로 넘긴다(디렉터리 신뢰는 install.sh가 config.toml에 선등록). 2026-09-07 실측.
-[[ -f "$HOME/.codex/hooks.json" ]] && CODEX_CMD="$CODEX_CMD --dangerously-bypass-hook-trust"
+if [[ "$ENGINE" == "agy" ]]; then
+  AGY_BIN="${AGY_BIN:-$(command -v agy || true)}"
+  if [[ -z "$AGY_BIN" || ! -x "$AGY_BIN" ]]; then
+    echo "오류: agy를 찾을 수 없음 — .env에 AGY_BIN을 지정하거나 PATH에 agy를 두세요" >&2
+    exit 1
+  fi
+  # 무인 pane에서 승인 프롬프트가 뜨면 중계가 멈추므로 자동 승인. --sandbox는 헤드리스와 달리
+  # 붙이지 않는다(codex TUI가 workspace-write로 도는 것과 같은 수준). 2026-09-11.
+  ENGINE_CMD="$AGY_BIN --dangerously-skip-permissions"
+else
+  CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
+  if [[ -z "$CODEX_BIN" || ! -x "$CODEX_BIN" ]]; then
+    echo "오류: codex를 찾을 수 없음 — .env에 CODEX_BIN을 지정하거나 PATH에 codex를 두세요" >&2
+    exit 1
+  fi
+  ENGINE_CMD="$CODEX_BIN -s workspace-write -c sandbox_workspace_write.network_access=true"
+  # 프레시 설치에서 codex hooks 신뢰 프롬프트가 무인 봇 기동을 막는다 — 훅은 사용자 자신의 설치분이라
+  # 자동화용 공식 플래그로 넘긴다(디렉터리 신뢰는 install.sh가 config.toml에 선등록). 2026-09-07 실측.
+  [[ -f "$HOME/.codex/hooks.json" ]] && ENGINE_CMD="$ENGINE_CMD --dangerously-bypass-hook-trust"
+fi
 
 log() { echo "[$(date '+%F %T')] $*"; }
 
@@ -45,11 +58,11 @@ log() { echo "[$(date '+%F %T')] $*"; }
 # 잡힌다(2026-08-05 E2E 실측) — 직접 실행 세션에서 node면 codex 런처다.
 if $TMUX_BIN has-session -t "$SESSION" 2>/dev/null; then
   cmd=$($TMUX_BIN display-message -p -t "$PANE" '#{pane_current_command}' 2>/dev/null || true)
-  if [[ "$cmd" == *codex* || "$cmd" == node ]]; then
-    log "codex 이미 실행 중 ($SESSION, $cmd) — 종료"
+  if [[ "$cmd" == *"$ENGINE"* || ( "$ENGINE" == codex && "$cmd" == node ) ]]; then
+    log "$ENGINE 이미 실행 중 ($SESSION, $cmd) — 종료"
     exit 0
   fi
-  log "세션은 있으나 codex 아님($cmd) — 세션 재생성"
+  log "세션은 있으나 $ENGINE 아님($cmd) — 세션 재생성"
   $TMUX_BIN kill-session -t "$SESSION"
 fi
 
@@ -61,8 +74,8 @@ fi
 # 기존 tmux 서버의 maxfiles=256 상속을 피하도록 pane 안에서 soft limit을 올린다.
 # 바깥 기동 스크립트에서만 ulimit을 바꾸면 기존 서버의 자식에는 적용되지 않는다.
 $TMUX_BIN new-session -d -s "$SESSION" -c "$CODEX_WORKDIR" -x 200 -y 50 \
-  "ulimit -Sn 8192 && PATH=\"$PATH\" exec $CODEX_CMD"
-log "codex TUI 직접 기동 (셸 비경유)"
+  "ulimit -Sn 8192 && PATH=\"$PATH\" exec $ENGINE_CMD"
+log "$ENGINE TUI 직접 기동 (셸 비경유)"
 
 # 세션 특정은 화면 UUID가 아니라 롤아웃 파일 session_meta(cwd)로 한다 —
 # codex v0.146.0 기본 설정은 세션 UUID를 화면 어디에도 표시하지 않는다
@@ -77,7 +90,12 @@ READY=""
 for _ in $(seq 1 180); do
   sleep 1
   CAP=$($TMUX_BIN capture-pane -p -t "$PANE" 2>/dev/null || true)
-  if grep -qE '›|OpenAI Codex' <<<"$CAP"; then READY=1; break; fi
+  if [[ "$ENGINE" == agy ]]; then
+    # agy 배너 "Antigravity CLI" 또는 입력 프롬프트 줄 "> "
+    if grep -qE 'Antigravity CLI|^> ' <<<"$CAP"; then READY=1; break; fi
+  else
+    if grep -qE '›|OpenAI Codex' <<<"$CAP"; then READY=1; break; fi
+  fi
 done
 if [[ -z "$READY" ]]; then
   log "실패: 180초 내 TUI 미기동 — pane 화면 확인 필요"
@@ -87,10 +105,48 @@ log "TUI 준비 확인"
 
 # 더미 턴 1회 — 롤아웃 파일은 첫 턴 이후에 생성된다
 sleep 2
-$TMUX_BIN send-keys -t "$PANE" "Boot check. Reply with one short line."
+if [[ "$ENGINE" == agy ]]; then
+  # agy는 배너가 뜬 직후 입력 위젯이 아직 키를 받지 않아 첫 send-keys가 삼켜진다
+  # (2026-09-11 실측: "TUI 준비 확인" 1초 뒤 전송분이 통째로 사라짐) — 문구가 화면에
+  # 보일 때까지 최대 5회 재전송하고, 보인 뒤에만 Enter.
+  SENT=""
+  for _ in 1 2 3 4 5; do
+    $TMUX_BIN send-keys -t "$PANE" "Boot check. Reply with one short line."
+    sleep 2
+    if $TMUX_BIN capture-pane -p -t "$PANE" | grep -qF "Boot check"; then SENT=1; break; fi
+    sleep 2
+  done
+  [[ -n "$SENT" ]] || log "경고: 더미 턴 문구가 화면에 안 보임 — 그래도 Enter 시도"
+else
+  $TMUX_BIN send-keys -t "$PANE" "Boot check. Reply with one short line."
+fi
 sleep 1  # 텍스트 처리 전 Enter가 도착하면 제출되지 않음 (pasteToPane와 동일한 이유)
 $TMUX_BIN send-keys -t "$PANE" Enter
 log "더미 턴 전송"
+
+# agy: brain/<대화ID>/ 디렉터리가 첫 턴 뒤 생긴다 — STAMP보다 새 디렉터리 하나면 준비 완료.
+# 대화 ID의 정식 검출은 데몬(agy-transcript.mjs: presence 락 → 배너 → brain 최신)이 한다.
+if [[ "$ENGINE" == agy ]]; then
+  BRAIN="$HOME/.gemini/antigravity-cli/brain"
+  for i in $(seq 1 180); do
+    sleep 1
+    NEWDIR=$(find "$BRAIN" -mindepth 1 -maxdepth 1 -type d -newer "$STAMP" 2>/dev/null | head -1 || true)
+    if [[ -n "$NEWDIR" && -f "$NEWDIR/.system_generated/logs/transcript.jsonl" ]]; then
+      log "agy 대화 감지(brain): $(basename "$NEWDIR")"
+      log "준비 완료"
+      exit 0
+    fi
+    if (( i % 10 == 0 )); then
+      LAST_INPUT=$($TMUX_BIN capture-pane -p -t "$PANE" | grep -E '^> ' | tail -1 || true)
+      if [[ "$LAST_INPUT" == *"Boot check"* ]]; then
+        $TMUX_BIN send-keys -t "$PANE" Enter
+        log "더미 턴 미제출 감지(입력줄 잔류) — Enter 재전송"
+      fi
+    fi
+  done
+  log "경고: brain 대화 디렉터리 180초 내 미생성 — 첫 호명 시 Discord 경고가 뜨면 TUI에 메시지 한 번 보낼 것"
+  exit 1
+fi
 
 # cwd 일치 신규 롤아웃 파일 대기 (최대 180초 — 부팅 부하 여유, 2026-07-31 상향)
 # 부팅 부하로 Enter가 텍스트 처리 전에 도착하면 문구가 입력줄에 남고 제출되지 않는다

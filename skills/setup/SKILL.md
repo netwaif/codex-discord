@@ -85,6 +85,7 @@ bash scripts/install.sh
 2. `.env.gemini.example`을 `.env.gemini`로 복사해 채운다 — `ENGINE=agy`, `DATA_DIR=data-gemini`는 그대로 두고, `CODEX_WORKDIR`는 codex와 다른 폴더 권장
 3. `bash scripts/install.sh` 재실행 → `com.codex-discord.gemini` 데몬이 추가 등록된다
 4. 확인: `logs/daemon-gemini.log`에 "로그인: ... / 엔진 agy" 줄
+5. (선택) Gemini도 라이브 TUI 모드로 쓰려면 `.env.gemini`에 `TUI_PANE=gemini-live:0.0`·`TUI_CHANNEL_ID`를 넣고 `bash scripts/tui-up.sh .env.gemini` — codex와 같은 방식으로 pane에 agy TUI가 뜨고 그 채널이 연결된다
 
 agy가 없는 사용자에게는 이 단계를 권하지 않는다 (Antigravity 미사용자는 codex 단독으로 충분).
 
