@@ -107,14 +107,15 @@ log "TUI 준비 확인"
 sleep 2
 if [[ "$ENGINE" == agy ]]; then
   # agy는 배너가 뜬 직후 입력 위젯이 아직 키를 받지 않아 첫 send-keys가 삼켜진다
-  # (2026-09-11 실측: "TUI 준비 확인" 1초 뒤 전송분이 통째로 사라짐) — 문구가 화면에
-  # 보일 때까지 최대 5회 재전송하고, 보인 뒤에만 Enter.
+  # (2026-09-11 실측: "TUI 준비 확인" 1초 뒤 전송분이 통째로 사라짐. 실제 워크스페이스에서는
+  # 인덱싱 탓인지 25초 넘게 안 받는 경우도 있었음) — 문구가 화면에 보일 때까지 최대 ~90초 재전송하고,
+  # 보인 뒤에만 Enter.
   SENT=""
-  for _ in 1 2 3 4 5; do
+  for _ in $(seq 1 18); do
     $TMUX_BIN send-keys -t "$PANE" "Boot check. Reply with one short line."
     sleep 2
     if $TMUX_BIN capture-pane -p -t "$PANE" | grep -qF "Boot check"; then SENT=1; break; fi
-    sleep 2
+    sleep 3
   done
   [[ -n "$SENT" ]] || log "경고: 더미 턴 문구가 화면에 안 보임 — 그래도 Enter 시도"
 else
