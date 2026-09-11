@@ -11,13 +11,19 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE="${1:-.env}"
 # --window <이름>: 새 세션 대신 기존 세션에 스레드 창을 만든다(디스코드 스레드 = 전용 세션, 2026-09-11).
 #   세션이 없으면 exit 1(메인 TUI가 먼저). 끝에 `SESSION_ID=<sid> FILE=<경로>` 한 줄을 찍어 데몬이 읽는다.
-WINDOW=""
-if [[ "${2:-}" == "--window" ]]; then
-  WINDOW="${3:?오류: --window 뒤에 창 이름이 필요}"
-elif [[ -n "${2:-}" ]]; then
-  echo "오류: 알 수 없는 인자: $2 (사용법: tui-up.sh [env파일] [--window <창이름>])" >&2
-  exit 1
-fi
+# --thread <스레드ID>: 창 환경변수 DISCORD_THREAD_ID로 심는다 / --prime "<문구>": 더미 턴 대신 이 문구를 첫 턴으로 보낸다(스레드 프라이밍).
+WINDOW=""; THREAD_ID=""; PRIME=""
+shift $(( $# > 0 ? 1 : 0 ))
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --window) WINDOW="${2:?오류: --window 뒤에 창 이름이 필요}"; shift 2 ;;
+    --thread) THREAD_ID="${2:?오류: --thread 뒤에 스레드 ID가 필요}"; shift 2 ;;
+    --prime)  PRIME="${2:?오류: --prime 뒤에 문구가 필요}"; shift 2 ;;
+    *) echo "오류: 알 수 없는 인자: $1 (사용법: tui-up.sh [env파일] [--window <창이름>] [--thread <ID>] [--prime <문구>])" >&2; exit 1 ;;
+  esac
+done
+BOOT_TEXT="${PRIME:-Boot check. Reply with one short line.}"
+BOOT_MARK="${BOOT_TEXT:0:10}"
 [[ "$ENV_FILE" == /* ]] || ENV_FILE="$PROJECT_DIR/$ENV_FILE"
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "오류: $ENV_FILE 없음 — .env.example을 복사해 채우세요" >&2
@@ -115,7 +121,9 @@ if [[ -n "$SKIP_BOOT" ]]; then
   :
 elif [[ -n "$WINDOW" ]]; then
   # -n으로 이름을 박으면 tmux automatic-rename이 꺼져 창 이름이 프로세스명으로 바뀌지 않는다
-  $TMUX_BIN new-window -d -t "$SESSION" -n "$WINDOW" -c "$CODEX_WORKDIR" \
+  ENV_ARGS=()
+  [[ -n "$THREAD_ID" ]] && ENV_ARGS=(-e "DISCORD_THREAD_ID=$THREAD_ID")
+  $TMUX_BIN new-window -d -t "$SESSION" -n "$WINDOW" -c "$CODEX_WORKDIR" ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
     "ulimit -Sn 8192 && PATH=\"$PATH\" exec $ENGINE_CMD"
   log "$ENGINE 스레드 창 기동 ($PANE)"
 else
@@ -162,14 +170,14 @@ if [[ "$ENGINE" == agy ]]; then
   # 보인 뒤에만 Enter.
   SENT=""
   for _ in $(seq 1 18); do
-    $TMUX_BIN send-keys -t "$PANE" "Boot check. Reply with one short line."
+    $TMUX_BIN send-keys -t "$PANE" -l "$BOOT_TEXT"
     sleep 2
-    if $TMUX_BIN capture-pane -p -t "$PANE" | grep -qF "Boot check"; then SENT=1; break; fi
+    if $TMUX_BIN capture-pane -p -t "$PANE" | grep -qF "$BOOT_MARK"; then SENT=1; break; fi
     sleep 3
   done
   [[ -n "$SENT" ]] || log "경고: 더미 턴 문구가 화면에 안 보임 — 그래도 Enter 시도"
 else
-  $TMUX_BIN send-keys -t "$PANE" "Boot check. Reply with one short line."
+  $TMUX_BIN send-keys -t "$PANE" -l "$BOOT_TEXT"
 fi
 sleep 1  # 텍스트 처리 전 Enter가 도착하면 제출되지 않음 (pasteToPane와 동일한 이유)
 $TMUX_BIN send-keys -t "$PANE" Enter
@@ -192,7 +200,7 @@ if [[ "$ENGINE" == agy ]]; then
     fi
     if (( i % 10 == 0 )); then
       LAST_INPUT=$($TMUX_BIN capture-pane -p -t "$PANE" | grep -E '^> ' | tail -1 || true)
-      if [[ "$LAST_INPUT" == *"Boot check"* ]]; then
+      if [[ "$LAST_INPUT" == *"$BOOT_MARK"* ]]; then
         $TMUX_BIN send-keys -t "$PANE" Enter
         log "더미 턴 미제출 감지(입력줄 잔류) — Enter 재전송"
       fi
@@ -224,7 +232,7 @@ for i in $(seq 1 180); do
   if (( i % 10 == 0 )); then
     # 마지막 › 줄 = 입력줄. 제출 전엔 우리 문구, 제출 후엔 빈 줄/codex 제안 문구.
     LAST_INPUT=$($TMUX_BIN capture-pane -p -t "$PANE" | grep '›' | tail -1 || true)
-    if [[ "$LAST_INPUT" == *"Boot check"* ]]; then
+    if [[ "$LAST_INPUT" == *"$BOOT_MARK"* ]]; then
       $TMUX_BIN send-keys -t "$PANE" Enter
       log "더미 턴 미제출 감지(입력줄 잔류) — Enter 재전송"
     fi
