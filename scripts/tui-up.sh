@@ -9,6 +9,15 @@ set -uo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE="${1:-.env}"
+# --window <이름>: 새 세션 대신 기존 세션에 스레드 창을 만든다(디스코드 스레드 = 전용 세션, 2026-09-11).
+#   세션이 없으면 exit 1(메인 TUI가 먼저). 끝에 `SESSION_ID=<sid> FILE=<경로>` 한 줄을 찍어 데몬이 읽는다.
+WINDOW=""
+if [[ "${2:-}" == "--window" ]]; then
+  WINDOW="${3:?오류: --window 뒤에 창 이름이 필요}"
+elif [[ -n "${2:-}" ]]; then
+  echo "오류: 알 수 없는 인자: $2 (사용법: tui-up.sh [env파일] [--window <창이름>])" >&2
+  exit 1
+fi
 [[ "$ENV_FILE" == /* ]] || ENV_FILE="$PROJECT_DIR/$ENV_FILE"
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "오류: $ENV_FILE 없음 — .env.example을 복사해 채우세요" >&2
@@ -30,6 +39,7 @@ ENGINE="${ENGINE:-codex}"
 : "${CODEX_WORKDIR:?오류: .env에 CODEX_WORKDIR 필요}"
 PANE="${TUI_PANE:-codex-live:0.0}"
 SESSION="${PANE%%:*}"
+[[ -n "$WINDOW" ]] && PANE="$SESSION:$WINDOW.0"
 if [[ "$ENGINE" == "agy" ]]; then
   AGY_BIN="${AGY_BIN:-$(command -v agy || true)}"
   if [[ -z "$AGY_BIN" || ! -x "$AGY_BIN" ]]; then
@@ -56,7 +66,23 @@ log() { echo "[$(date '+%F %T')] $*"; }
 # 이미 codex가 떠 있으면 아무것도 하지 않는다 (멱등)
 # npm 배포판은 codex가 `#!/usr/bin/env node` 런처라 pane_current_command가 node로
 # 잡힌다(2026-08-05 E2E 실측) — 직접 실행 세션에서 node면 codex 런처다.
-if $TMUX_BIN has-session -t "$SESSION" 2>/dev/null; then
+SKIP_BOOT=""   # 창 모드에서 엔진이 이미 살아 있으면 기동·더미 턴을 건너뛰고 검출만 한다
+if [[ -n "$WINDOW" ]]; then
+  if ! $TMUX_BIN has-session -t "$SESSION" 2>/dev/null; then
+    echo "오류: 세션 $SESSION 없음 — 메인 TUI를 먼저 띄우세요" >&2
+    exit 1
+  fi
+  if $TMUX_BIN list-windows -t "$SESSION" -F '#W' 2>/dev/null | grep -qx "$WINDOW"; then
+    cmd=$($TMUX_BIN display-message -p -t "$PANE" '#{pane_current_command}' 2>/dev/null || true)
+    if [[ "$cmd" == *"$ENGINE"* || ( "$ENGINE" == codex && "$cmd" == node ) ]]; then
+      log "$ENGINE 이미 실행 중 ($PANE, $cmd) — 세션 검출만"
+      SKIP_BOOT=1
+    else
+      log "창은 있으나 $ENGINE 아님($cmd) — 창 재생성"
+      $TMUX_BIN kill-window -t "$SESSION:$WINDOW"
+    fi
+  fi
+elif $TMUX_BIN has-session -t "$SESSION" 2>/dev/null; then
   cmd=$($TMUX_BIN display-message -p -t "$PANE" '#{pane_current_command}' 2>/dev/null || true)
   if [[ "$cmd" == *"$ENGINE"* || ( "$ENGINE" == codex && "$cmd" == node ) ]]; then
     log "$ENGINE 이미 실행 중 ($SESSION, $cmd) — 종료"
@@ -73,9 +99,18 @@ fi
 # PATH 전파: env 셔뱅(#!/usr/bin/env node)이 tmux 서버 환경에서도 node를 찾도록.
 # 기존 tmux 서버의 maxfiles=256 상속을 피하도록 pane 안에서 soft limit을 올린다.
 # 바깥 기동 스크립트에서만 ulimit을 바꾸면 기존 서버의 자식에는 적용되지 않는다.
-$TMUX_BIN new-session -d -s "$SESSION" -c "$CODEX_WORKDIR" -x 200 -y 50 \
-  "ulimit -Sn 8192 && PATH=\"$PATH\" exec $ENGINE_CMD"
-log "$ENGINE TUI 직접 기동 (셸 비경유)"
+if [[ -n "$SKIP_BOOT" ]]; then
+  :
+elif [[ -n "$WINDOW" ]]; then
+  # -n으로 이름을 박으면 tmux automatic-rename이 꺼져 창 이름이 프로세스명으로 바뀌지 않는다
+  $TMUX_BIN new-window -d -t "$SESSION" -n "$WINDOW" -c "$CODEX_WORKDIR" \
+    "ulimit -Sn 8192 && PATH=\"$PATH\" exec $ENGINE_CMD"
+  log "$ENGINE 스레드 창 기동 ($PANE)"
+else
+  $TMUX_BIN new-session -d -s "$SESSION" -c "$CODEX_WORKDIR" -x 200 -y 50 \
+    "ulimit -Sn 8192 && PATH=\"$PATH\" exec $ENGINE_CMD"
+  log "$ENGINE TUI 직접 기동 (셸 비경유)"
+fi
 
 # 세션 특정은 화면 UUID가 아니라 롤아웃 파일 session_meta(cwd)로 한다 —
 # codex v0.146.0 기본 설정은 세션 UUID를 화면 어디에도 표시하지 않는다
@@ -83,6 +118,9 @@ log "$ENGINE TUI 직접 기동 (셸 비경유)"
 # 롤아웃은 첫 턴 후에 생기므로 순서는 "기동 → 준비 대기 → 더미 턴 → 롤아웃 대기".
 STAMP=$(mktemp "${TMPDIR:-/tmp}/tui-up-stamp.XXXXXX")
 trap 'rm -f "$STAMP"' EXIT
+[[ -n "$SKIP_BOOT" ]] && touch -t 197001010000 "$STAMP"
+
+if [[ -z "$SKIP_BOOT" ]]; then
 
 # TUI 준비 대기: 입력 프롬프트(›)나 배너가 뜰 때까지 (최대 180초 —
 # 부팅 직후엔 시스템 부하로 codex 기동이 60초를 넘긴다, 2026-07-30·07-31 실측)
@@ -124,6 +162,7 @@ fi
 sleep 1  # 텍스트 처리 전 Enter가 도착하면 제출되지 않음 (pasteToPane와 동일한 이유)
 $TMUX_BIN send-keys -t "$PANE" Enter
 log "더미 턴 전송"
+fi  # SKIP_BOOT
 
 # agy: brain/<대화ID>/ 디렉터리가 첫 턴 뒤 생긴다 — STAMP보다 새 디렉터리 하나면 준비 완료.
 # 대화 ID의 정식 검출은 데몬(agy-transcript.mjs: presence 락 → 배너 → brain 최신)이 한다.
@@ -135,6 +174,7 @@ if [[ "$ENGINE" == agy ]]; then
     if [[ -n "$NEWDIR" && -f "$NEWDIR/.system_generated/logs/transcript.jsonl" ]]; then
       log "agy 대화 감지(brain): $(basename "$NEWDIR")"
       log "준비 완료"
+      echo "SESSION_ID=$(basename "$NEWDIR") FILE=$NEWDIR/.system_generated/logs/transcript.jsonl"
       exit 0
     fi
     if (( i % 10 == 0 )); then
@@ -159,11 +199,12 @@ for i in $(seq 1 180); do
     if head -1 "$f" 2>/dev/null | grep -qF "\"cwd\":\"$CODEX_WORKDIR\""; then
       FILE="$f"; break
     fi
-  done < <(find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -type f -newer "$STAMP" 2>/dev/null)
+  done < <(find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -type f -newer "$STAMP" 2>/dev/null | sort -r)
   if [[ -n "$FILE" ]]; then
     SID=$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<<"$FILE" | tail -1 || true)
     log "codex 세션 감지(롤아웃): ${SID:-확인불가} — $FILE"
     log "준비 완료"
+    echo "SESSION_ID=${SID:-} FILE=$FILE"
     exit 0
   fi
   if (( i % 10 == 0 )); then
