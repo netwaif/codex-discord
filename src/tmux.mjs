@@ -66,7 +66,15 @@ export function treeHasEngine(psText, rootPid, engine) {
 
 export const treeHasCodex = (psText, rootPid) => treeHasEngine(psText, rootPid, 'codex');
 
+// pane(창) 실존 — display-message는 죽은 창 타깃을 오류 없이 세션의 현재 창으로 폴백한다
+// (tmux 3.5a 컨테이너·3.6a 맥 실측 2026-09-11: 회전으로 닫힌 스레드 창을 "살아 있음"으로 오판해
+// 붙여넣기에서야 "can't find window"). list-panes는 창이 없으면 exit 1이라 이걸로 먼저 거른다.
+export async function paneExists(pane) {
+  try { await run('tmux', ['list-panes', '-t', pane, '-F', '#{pane_id}']); return true; } catch { return false; }
+}
+
 export async function paneHasEngine(pane, engine = 'codex') {
+  if (!(await paneExists(pane))) return false;
   const cmd = await paneCurrentCommand(pane);
   if (cmd.includes(engine)) return true;
   const { stdout: pidOut } = await run('tmux', ['display-message', '-p', '-t', pane, '#{pane_pid}']);
