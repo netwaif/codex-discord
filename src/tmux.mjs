@@ -15,12 +15,30 @@ export function sanitizeForPaste(text) {
 // 스파이크 검증(2026-07-23): 텍스트와 Enter를 한 호출로 보내면 TUI가 제출하지 않고,
 // send-keys로 보낸 줄바꿈은 Enter로 해석돼 중간 제출된다. 그래서
 // (1) bracketed paste(-p)로 본문을 붙여넣고 (2) 잠시 후 Enter를 별도 전송한다.
-export async function pasteToPane(pane, text) {
-  const clean = sanitizeForPaste(text);
+// 붙여넣기 유실 검증 — agy TUI는 도구 블록("ctrl+o to expand")이 있던 턴 직후 첫 bracketed paste를 삼킨다
+// (2026-09-11 컨테이너 2회 실측: 데몬은 paste·Enter까지 마쳤는데 입력줄 빈 채 로그 흔적 0, 곧바로 다시 붙이면 정상).
+// 붙여넣기 뒤 마지막 프롬프트 줄이 완전히 비어 있을 때만 한 번 더 붙인다(글자가 있으면 재시도 없음 → 중복 방지).
+export function promptLineEmpty(screen) {
+  const lines = screen.split('\n').filter((l) => /^[>›]/.test(l));
+  const last = lines.at(-1) ?? '';
+  return /^[>›]\s*$/.test(last);
+}
+
+async function pasteOnce(pane, clean) {
   const buf = `codex-bridge-${process.pid}-${++bufferSeq}`;
   await run('tmux', ['set-buffer', '-b', buf, '--', clean]);
   await run('tmux', ['paste-buffer', '-p', '-d', '-b', buf, '-t', pane]);
   await sleep(200 + Math.min(800, Math.floor(clean.length / 50)));
+}
+
+export async function pasteToPane(pane, text) {
+  const clean = sanitizeForPaste(text);
+  await pasteOnce(pane, clean);
+  const { stdout } = await run('tmux', ['capture-pane', '-p', '-t', pane]).catch(() => ({ stdout: '' }));
+  if (stdout && promptLineEmpty(stdout)) {
+    console.log(`붙여넣기 유실 감지(${pane}) — 재시도`);
+    await pasteOnce(pane, clean);
+  }
   await run('tmux', ['send-keys', '-t', pane, 'Enter']);
 }
 

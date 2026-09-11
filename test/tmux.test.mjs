@@ -56,3 +56,10 @@ test('treeHasEngine(agy): 셸 루트 아래 자손에 agy가 있어도 참, 없�
   assert.equal(treeHasEngine(ps, '7000', 'agy'), true);
   assert.equal(treeHasEngine(' 7000     1 -zsh', '7000', 'agy'), false);
 });
+
+test('promptLineEmpty: 마지막 프롬프트 줄이 빈 ">"면 참, 글자가 있으면 거짓 (agy 붙여넣기 유실 검증)', async () => {
+  const { promptLineEmpty } = await import('../src/tmux.mjs');
+  assert.equal(promptLineEmpty('> Boot check\n  ok\n────\n>\n────\n? for shortcuts'), true);
+  assert.equal(promptLineEmpty('> Boot check\n  ok\n────\n> [netwaif] 이제 주말인데\n────'), false);
+  assert.equal(promptLineEmpty('› Ask Codex to do anything\n  gpt-5'), false);
+});
