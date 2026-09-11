@@ -9,7 +9,7 @@ import { runCodexTurn, killActiveCodexChildren } from './codex.mjs';
 import { runAgyTurn, killActiveAgyChildren } from './agy.mjs';
 import { chunkMessage } from './chunk.mjs';
 import { pasteToPane, paneCurrentCommand, paneHasEngine, UUID_RE } from './tmux.mjs';
-import { findRolloutByCwd, RolloutTail } from './rollout.mjs';
+import { findRolloutByCwd, findRolloutByPane, RolloutTail } from './rollout.mjs';
 import { findConversationByPane, extractPlannerResponses } from './agy-transcript.mjs';
 import { classifyMessage, ContextQueue } from './routing.mjs';
 import { ThreadRegistry, primeText, reanchorPrefix, logLine } from './threads.mjs';
@@ -151,7 +151,7 @@ async function ensureThreadTail(threadChannel, entry) {
   if (!exists) {
     const hit = ENGINE === 'agy'
       ? await findConversationByPane(entry.pane)
-      : await findRolloutByCwd(WORKDIR, undefined, { exclude: new Set([tuiTail?.filePath, ...threads.entries().filter((e) => e !== entry).map((e) => e.file)].filter(Boolean)) });
+      : (await findRolloutByPane(entry.pane)) ?? await findRolloutByCwd(WORKDIR, undefined, { exclude: new Set([tuiTail?.filePath, ...threads.entries().filter((e) => e !== entry).map((e) => e.file)].filter(Boolean)) });
     if (!hit) throw new Error(`스레드 세션 파일 없음: ${file}`);
     ({ sid, file } = { sid: hit.sid ?? sid, file: hit.file });
   }
@@ -253,7 +253,8 @@ async function ensureTuiTail(channel) {
   }
   const hit = ENGINE === 'agy'
     ? await findConversationByPane(TUI_PANE)
-    : await findRolloutByCwd(WORKDIR, undefined, { exclude: new Set(threads.entries().map((e) => e.file)) });
+    : (await findRolloutByPane(TUI_PANE))
+      ?? await findRolloutByCwd(WORKDIR, undefined, { exclude: new Set(threads.entries().map((e) => e.file)) });
   if (!hit) {
     throw new Error(ENGINE === 'agy'
       ? `agy 대화를 특정하지 못함 — pane(${TUI_PANE})의 presence 락·배너·brain 최신 모두 실패. TUI에서 메시지를 한 번 보낸 뒤 다시 시도하세요`

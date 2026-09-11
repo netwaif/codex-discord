@@ -68,7 +68,7 @@ export async function findNewestConversation(root = BRAIN_ROOT) {
 }
 
 // pane PID(와 자손)가 연 presence 락으로 대화 ID를 찾는다. 맥은 lsof, 리눅스는 /proc.
-async function openFilesText(pid) {
+export async function openFilesText(pid) {
   if (process.platform === 'linux') {
     const { stdout } = await run('sh', ['-c',
       `for p in ${pid} $(pgrep -P ${pid} 2>/dev/null); do ls -l /proc/$p/fd 2>/dev/null; done`]);

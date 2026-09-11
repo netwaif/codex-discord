@@ -1,6 +1,11 @@
 import { stat, open, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { openFilesText } from './agy-transcript.mjs';
+
+const run = promisify(execFile);
 
 const SESSIONS_ROOT = join(homedir(), '.codex', 'sessions');
 
@@ -62,6 +67,26 @@ function auxiliaryReason(meta) {
 }
 
 // exclude: 다른 주인(스레드 창 세션)에 묶인 롤아웃 파일 — 같은 cwd라 메인 검출이 갈아타지 않게 건너뛴다.
+// lsof -Fn / `ls -l /proc/<pid>/fd` 출력에서 codex 롤아웃 경로를 찾는다 — 형식 불문 경로만 본다.
+// codex TUI는 자기 롤아웃 jsonl을 열어 둔 채 돈다(2026-09-11 컨테이너 /proc 실측, 맥 lsof 동일 전제).
+const ROLLOUT_PATH_RE = /(\S*[\/\\]sessions[\/\\][^\s]*rollout-[^\s]*?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl)/;
+export function rolloutFromOpenFiles(text) {
+  const m = text.match(ROLLOUT_PATH_RE);
+  return m ? { file: m[1], sid: m[2] } : null;
+}
+
+// pane PID(와 자손)가 연 롤아웃 = 그 pane의 세션(확실). 못 찾으면 null → 호출측이 findRolloutByCwd로 폴백.
+// cwd 최신 검색은 스레드 세션이 같은 cwd를 쓰면 죽은 스레드의 더 새 롤아웃을 메인으로 오선택한다
+// (2026-09-11 컨테이너 실측: 메인 답이 중계되지 않음).
+export async function findRolloutByPane(pane) {
+  try {
+    const { stdout: pidOut } = await run('tmux', ['display-message', '-p', '-t', pane, '#{pane_pid}']);
+    const hit = rolloutFromOpenFiles(await openFilesText(pidOut.trim()));
+    if (hit) console.log(`롤아웃 선택(pane 열린 파일): ${hit.sid}`);
+    return hit;
+  } catch { return null; }
+}
+
 export async function findRolloutByCwd(cwd, root = SESSIONS_ROOT, { exclude = new Set() } = {}) {
   try {
     for (const y of await listSorted(root))

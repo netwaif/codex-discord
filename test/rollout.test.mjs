@@ -145,3 +145,12 @@ test('findRolloutByCwd: exclude에 든 파일은 건너뛰고 다음 cwd 일치 
   assert.equal((await findRolloutByCwd('/w', root)).file, newer);
   assert.equal((await findRolloutByCwd('/w', root, { exclude: new Set([newer]) })).file, older);
 });
+
+test('rolloutFromOpenFiles: /proc fd·lsof 출력에서 롤아웃 경로와 세션 ID를 뽑는다', async () => {
+  const { rolloutFromOpenFiles } = await import('../src/rollout.mjs');
+  const proc = 'lrwx------ 1 h h 64 Sep 11 12:17 3 -> /dev/pts/1\nl-wx------ 1 h h 64 Sep 11 12:17 21 -> /opt/data/.codex/sessions/2026/09/11/rollout-2026-09-11T12-17-18-01a09066-9a5b-7a41-925a-46b534b4c0b2.jsonl\n';
+  assert.deepEqual(rolloutFromOpenFiles(proc), { file: '/opt/data/.codex/sessions/2026/09/11/rollout-2026-09-11T12-17-18-01a09066-9a5b-7a41-925a-46b534b4c0b2.jsonl', sid: '01a09066-9a5b-7a41-925a-46b534b4c0b2' });
+  const lsof = 'p123\nn/dev/ttys004\nn/Users/t/.codex/sessions/2026/09/11/rollout-2026-09-11T10-00-00-0195aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee.jsonl\n';
+  assert.equal(rolloutFromOpenFiles(lsof).sid, '0195aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee');
+  assert.equal(rolloutFromOpenFiles('n/dev/null\n'), null);
+});
