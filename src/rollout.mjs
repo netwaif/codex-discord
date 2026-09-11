@@ -69,9 +69,11 @@ function auxiliaryReason(meta) {
 // exclude: 다른 주인(스레드 창 세션)에 묶인 롤아웃 파일 — 같은 cwd라 메인 검출이 갈아타지 않게 건너뛴다.
 // lsof -Fn / `ls -l /proc/<pid>/fd` 출력에서 codex 롤아웃 경로를 찾는다 — 형식 불문 경로만 본다.
 // codex TUI는 자기 롤아웃 jsonl을 열어 둔 채 돈다(2026-09-11 컨테이너 /proc 실측, 맥 lsof 동일 전제).
-const ROLLOUT_PATH_RE = /(\S*[\/\\]sessions[\/\\][^\s]*rollout-[^\s]*?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl)/;
+// 경로는 `/`로 시작하고 앞이 줄 처음·공백·lsof 필드 문자(`n`)여야 한다 — `\S*`로 잡으면 lsof -Fn의 `n/Users/…`가
+// 통째로 경로가 돼 ENOENT(2026-09-11 맥 실측, v0.1.18 결함).
+const ROLLOUT_PATH_RE = /(?:^|\s|^n)(\/[^\s]*?\/sessions\/[^\s]*?rollout-[^\s]*?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl)/m;
 export function rolloutFromOpenFiles(text) {
-  const m = text.match(ROLLOUT_PATH_RE);
+  const m = text.replace(/^n(?=\/)/gm, '').match(ROLLOUT_PATH_RE);
   return m ? { file: m[1], sid: m[2] } : null;
 }
 
