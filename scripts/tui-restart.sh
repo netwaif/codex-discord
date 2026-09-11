@@ -55,7 +55,7 @@ notify() {
 
 sleep 8  # codex의 마지막 디스코드 답장(롤아웃 relay)이 나갈 시간
 
-"$TMUX_BIN" kill-session -t "$SESSION" 2>/dev/null || true
+"$TMUX_BIN" kill-session -t "=$SESSION" 2>/dev/null || true  # =: 정확 일치(접두로 <이름>-daemon 오살 방지)
 if "$PROJECT_DIR/scripts/tui-up.sh" "$ENV_FILE" >> "$LOG" 2>&1; then
   log "판정: ✅ 준비 완료"
   notify "✅ 준비 완료 — '이어서하자'로 재정박"

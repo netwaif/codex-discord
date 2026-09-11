@@ -38,16 +38,16 @@ out=$(HOME="$T/home" PATH="$T/bin:$PATH" FAKE_SESSION=1 bash "$ROOT/scripts/tui-
 last=$(tail -1 <<<"$out")
 [[ $rc -eq 0 ]] && ok "창 모드 exit 0" || ng "창 모드 exit 0 (rc=$rc): $out"
 [[ "$last" == "SESSION_ID=$UUID FILE=$T/home/.codex/sessions/2026/09/11/rollout-2026-09-11T00-00-00-$UUID.jsonl" ]] && ok "마지막 줄 SESSION_ID/FILE" || ng "마지막 줄: $last"
-grep -q "tmux new-window -d -t fake-live -n t000001 -c $T/work" "$T/tmux.log" && ok "new-window -n t000001 -c 작업폴더" || ng "new-window 인자: $(grep new-window "$T/tmux.log")"
+grep -q "tmux new-window -d -t =fake-live -n t000001 -c $T/work" "$T/tmux.log" && ok "new-window -n t000001 -c 작업폴더" || ng "new-window 인자: $(grep new-window "$T/tmux.log")"
 grep -q "tmux new-session" "$T/tmux.log" && ng "new-session 호출됨(창 모드에서 금지)" || ok "new-session 미호출"
-grep -q "send-keys -t fake-live:t000001.0" "$T/tmux.log" && ok "더미 턴이 창 pane으로" || ng "더미 턴 대상: $(grep send-keys "$T/tmux.log" | head -1)"
+grep -q "send-keys -t =fake-live:t000001.0" "$T/tmux.log" && ok "더미 턴이 창 pane으로" || ng "더미 턴 대상: $(grep send-keys "$T/tmux.log" | head -1)"
 
 # (2b) --thread/--prime
 : > "$T/tmux.log"; rm -rf "$T/home/.codex"
 out=$(HOME="$T/home" PATH="$T/bin:$PATH" FAKE_SESSION=1 bash "$ROOT/scripts/tui-up.sh" "$T/env" --window t000002 --thread 100 --prime "[스레드 세션] 준비됨 한 단어로" 2>&1); rc=$?
 [[ $rc -eq 0 ]] && ok "--thread/--prime exit 0" || ng "--thread/--prime (rc=$rc): $out"
 grep -q -- "-n t000002 -c $T/work -e DISCORD_THREAD_ID=100 " "$T/tmux.log" && ok "new-window -e DISCORD_THREAD_ID" || ng "-e 누락: $(grep new-window "$T/tmux.log")"
-grep -q -- "send-keys -t fake-live:t000002.0 -l \[스레드 세션\] 준비됨 한 단어로" "$T/tmux.log" && ok "프라이밍 문구 전송" || ng "프라이밍: $(grep send-keys "$T/tmux.log" | head -1)"
+grep -q -- "send-keys -t =fake-live:t000002.0 -l \[스레드 세션\] 준비됨 한 단어로" "$T/tmux.log" && ok "프라이밍 문구 전송" || ng "프라이밍: $(grep send-keys "$T/tmux.log" | head -1)"
 grep -q "Boot check" "$T/tmux.log" && ng "Boot check 문구가 남아 있음" || ok "Boot check 대체됨"
 
 # (3) 잘못된 인자

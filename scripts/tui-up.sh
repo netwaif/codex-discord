@@ -46,6 +46,9 @@ ENGINE="${ENGINE:-codex}"
 PANE="${TUI_PANE:-codex-live:0.0}"
 SESSION="${PANE%%:*}"
 [[ -n "$WINDOW" ]] && PANE="$SESSION:$WINDOW.0"
+# tmux 타깃은 정확 일치(=)로 — 세션이 없을 때 유일 접두 일치가 `<이름>-daemon`(folder-bot 데몬 세션)을
+# 잡아 데몬을 죽이거나 그 pane에 키를 넣는다(2026-09-11 컨테이너 실측: TUI 재시작이 데몬 세션을 kill).
+TS="=$SESSION"; TP="=$PANE"
 if [[ "$ENGINE" == "agy" ]]; then
   AGY_BIN="${AGY_BIN:-$(command -v agy || true)}"
   if [[ -z "$AGY_BIN" || ! -x "$AGY_BIN" ]]; then
@@ -86,28 +89,28 @@ wait_boot_reply() {
 # 잡힌다(2026-08-05 E2E 실측) — 직접 실행 세션에서 node면 codex 런처다.
 SKIP_BOOT=""   # 창 모드에서 엔진이 이미 살아 있으면 기동·더미 턴을 건너뛰고 검출만 한다
 if [[ -n "$WINDOW" ]]; then
-  if ! $TMUX_BIN has-session -t "$SESSION" 2>/dev/null; then
+  if ! $TMUX_BIN has-session -t "$TS" 2>/dev/null; then
     echo "오류: 세션 $SESSION 없음 — 메인 TUI를 먼저 띄우세요" >&2
     exit 1
   fi
-  if $TMUX_BIN list-windows -t "$SESSION" -F '#W' 2>/dev/null | grep -qx "$WINDOW"; then
-    cmd=$($TMUX_BIN display-message -p -t "$PANE" '#{pane_current_command}' 2>/dev/null || true)
+  if $TMUX_BIN list-windows -t "$TS" -F '#W' 2>/dev/null | grep -qx "$WINDOW"; then
+    cmd=$($TMUX_BIN display-message -p -t "$TP" '#{pane_current_command}' 2>/dev/null || true)
     if [[ "$cmd" == *"$ENGINE"* || ( "$ENGINE" == codex && "$cmd" == node ) ]]; then
       log "$ENGINE 이미 실행 중 ($PANE, $cmd) — 세션 검출만"
       SKIP_BOOT=1
     else
       log "창은 있으나 $ENGINE 아님($cmd) — 창 재생성"
-      $TMUX_BIN kill-window -t "$SESSION:$WINDOW"
+      $TMUX_BIN kill-window -t "$TS:$WINDOW"
     fi
   fi
-elif $TMUX_BIN has-session -t "$SESSION" 2>/dev/null; then
-  cmd=$($TMUX_BIN display-message -p -t "$PANE" '#{pane_current_command}' 2>/dev/null || true)
+elif $TMUX_BIN has-session -t "$TS" 2>/dev/null; then
+  cmd=$($TMUX_BIN display-message -p -t "$TP" '#{pane_current_command}' 2>/dev/null || true)
   if [[ "$cmd" == *"$ENGINE"* || ( "$ENGINE" == codex && "$cmd" == node ) ]]; then
     log "$ENGINE 이미 실행 중 ($SESSION, $cmd) — 종료"
     exit 0
   fi
   log "세션은 있으나 $ENGINE 아님($cmd) — 세션 재생성"
-  $TMUX_BIN kill-session -t "$SESSION"
+  $TMUX_BIN kill-session -t "$TS"
 fi
 
 # 셸에 타이핑하지 않고 세션 명령으로 직접 실행한다 — 대화형 zsh의 compinit
@@ -125,7 +128,7 @@ elif [[ -n "$WINDOW" ]]; then
   # -n으로 이름을 박으면 tmux automatic-rename이 꺼져 창 이름이 프로세스명으로 바뀌지 않는다
   ENV_ARGS=()
   [[ -n "$THREAD_ID" ]] && ENV_ARGS=(-e "DISCORD_THREAD_ID=$THREAD_ID")
-  $TMUX_BIN new-window -d -t "$SESSION" -n "$WINDOW" -c "$CODEX_WORKDIR" ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
+  $TMUX_BIN new-window -d -t "$TS" -n "$WINDOW" -c "$CODEX_WORKDIR" ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
     "ulimit -Sn 8192 && unset SSH_CONNECTION SSH_CLIENT SSH_TTY; PATH=\"$PATH\" exec $ENGINE_CMD"
   log "$ENGINE 스레드 창 기동 ($PANE)"
 else
@@ -149,7 +152,7 @@ if [[ -z "$SKIP_BOOT" ]]; then
 READY=""
 for _ in $(seq 1 180); do
   sleep 1
-  CAP=$($TMUX_BIN capture-pane -p -t "$PANE" 2>/dev/null || true)
+  CAP=$($TMUX_BIN capture-pane -p -t "$TP" 2>/dev/null || true)
   if [[ "$ENGINE" == agy ]]; then
     # agy 배너 "Antigravity CLI" 또는 입력 프롬프트 줄 "> "
     if grep -qE 'Antigravity CLI|^> ' <<<"$CAP"; then READY=1; break; fi
@@ -172,17 +175,17 @@ if [[ "$ENGINE" == agy ]]; then
   # 보인 뒤에만 Enter.
   SENT=""
   for _ in $(seq 1 18); do
-    $TMUX_BIN send-keys -t "$PANE" -l "$BOOT_TEXT"
+    $TMUX_BIN send-keys -t "$TP" -l "$BOOT_TEXT"
     sleep 2
-    if $TMUX_BIN capture-pane -p -t "$PANE" | grep -qF "$BOOT_MARK"; then SENT=1; break; fi
+    if $TMUX_BIN capture-pane -p -t "$TP" | grep -qF "$BOOT_MARK"; then SENT=1; break; fi
     sleep 3
   done
   [[ -n "$SENT" ]] || log "경고: 더미 턴 문구가 화면에 안 보임 — 그래도 Enter 시도"
 else
-  $TMUX_BIN send-keys -t "$PANE" -l "$BOOT_TEXT"
+  $TMUX_BIN send-keys -t "$TP" -l "$BOOT_TEXT"
 fi
 sleep 1  # 텍스트 처리 전 Enter가 도착하면 제출되지 않음 (pasteToPane와 동일한 이유)
-$TMUX_BIN send-keys -t "$PANE" Enter
+$TMUX_BIN send-keys -t "$TP" Enter
 log "더미 턴 전송"
 fi  # SKIP_BOOT
 
@@ -201,9 +204,9 @@ if [[ "$ENGINE" == agy ]]; then
       exit 0
     fi
     if (( i % 10 == 0 )); then
-      LAST_INPUT=$($TMUX_BIN capture-pane -p -t "$PANE" | grep -E '^> ' | tail -1 || true)
+      LAST_INPUT=$($TMUX_BIN capture-pane -p -t "$TP" | grep -E '^> ' | tail -1 || true)
       if [[ "$LAST_INPUT" == *"$BOOT_MARK"* ]]; then
-        $TMUX_BIN send-keys -t "$PANE" Enter
+        $TMUX_BIN send-keys -t "$TP" Enter
         log "더미 턴 미제출 감지(입력줄 잔류) — Enter 재전송"
       fi
     fi
@@ -233,9 +236,9 @@ for i in $(seq 1 180); do
   fi
   if (( i % 10 == 0 )); then
     # 마지막 › 줄 = 입력줄. 제출 전엔 우리 문구, 제출 후엔 빈 줄/codex 제안 문구.
-    LAST_INPUT=$($TMUX_BIN capture-pane -p -t "$PANE" | grep '›' | tail -1 || true)
+    LAST_INPUT=$($TMUX_BIN capture-pane -p -t "$TP" | grep '›' | tail -1 || true)
     if [[ "$LAST_INPUT" == *"$BOOT_MARK"* ]]; then
-      $TMUX_BIN send-keys -t "$PANE" Enter
+      $TMUX_BIN send-keys -t "$TP" Enter
       log "더미 턴 미제출 감지(입력줄 잔류) — Enter 재전송"
     fi
   fi
