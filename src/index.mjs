@@ -184,7 +184,26 @@ async function reattachThreads() {
 }
 
 // codex 답변을 채널로 릴레이: [[첨부: 경로]] 마커는 걷어내 검증 후 파일로 첨부
+// "입력 중…" 표시(TUI·스레드 경로) — 붙여넣기 뒤 답이 중계될 때까지 8초마다 sendTyping, 상한 5분.
+// 헤드리스 경로는 runTurn 대기 중 자체 interval을 쓴다(아래). 2026-09-11 사용자 요청("대화가 심심하다").
+const typingTimers = new Map();
+function startTyping(channel) {
+  stopTyping(channel.id);
+  const until = Date.now() + 5 * 60 * 1000;
+  channel.sendTyping().catch(() => {});
+  const t = setInterval(() => {
+    if (Date.now() > until) { stopTyping(channel.id); return; }
+    channel.sendTyping().catch(() => {});
+  }, 8000);
+  typingTimers.set(channel.id, t);
+}
+function stopTyping(channelId) {
+  const t = typingTimers.get(channelId);
+  if (t) { clearInterval(t); typingTimers.delete(channelId); }
+}
+
 async function relayReply(channel, raw) {
+  stopTyping(channel.id);
   const { text, paths } = extractAttachmentMarkers(raw);
   for (const chunk of chunkMessage(text)) {
     await channel.send({ content: chunk, allowedMentions: { parse: [] } }).catch((err) => console.error('릴레이 전송 실패:', err.message));
@@ -292,6 +311,7 @@ client.on('messageCreate', async (message) => {
           entry.fresh = false;
         }
         await pasteToPane(entry.pane, text);
+        startTyping(message.channel);
         threadTails.get(tid).lastQ = block;
         entry.last = new Date().toISOString();
         await threads.save();
@@ -327,6 +347,7 @@ client.on('messageCreate', async (message) => {
         await ensureTuiTail(message.channel);
         block = tuiQueue.drain(speaker, await withAttachments(message, message.cleanContent));
         await pasteToPane(TUI_PANE, block);
+        startTyping(message.channel);
       } catch (err) {
         if (block !== null) tuiQueue.restore(block);
         await message.channel.send({ content: `⚠️ ${String(err.message ?? err).slice(0, 1500)}`, allowedMentions: { parse: [] } }).catch(() => {});
