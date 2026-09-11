@@ -132,3 +132,16 @@ test('findRolloutByCwd: 구버전(0.125~0.128) 사용자 세션은 thread_source
   const hit = await findRolloutByCwd('/old', root);
   assert.equal(hit?.sid, 'eeeeeeee-1111-2222-3333-444444444444');
 });
+
+test('findRolloutByCwd: exclude에 든 파일은 건너뛰고 다음 cwd 일치 파일을 고른다', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sess-'));
+  const day = join(root, '2026', '09', '11'); await mkdir(day, { recursive: true });
+  const meta = (sid) => JSON.stringify({ type: 'session_meta', payload: { id: sid, cwd: '/w', source: 'cli', thread_source: 'user' } }) + '\n';
+  const older = join(day, 'rollout-2026-09-11T01-00-00-aaaaaaaa-0000-4000-8000-000000000001.jsonl');
+  const newer = join(day, 'rollout-2026-09-11T02-00-00-bbbbbbbb-0000-4000-8000-000000000002.jsonl');
+  await writeFile(older, meta('aaaaaaaa-0000-4000-8000-000000000001'));
+  await writeFile(newer, meta('bbbbbbbb-0000-4000-8000-000000000002'));
+  const { findRolloutByCwd } = await import('../src/rollout.mjs');
+  assert.equal((await findRolloutByCwd('/w', root)).file, newer);
+  assert.equal((await findRolloutByCwd('/w', root, { exclude: new Set([newer]) })).file, older);
+});

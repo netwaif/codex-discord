@@ -61,13 +61,15 @@ function auxiliaryReason(meta) {
   return null;
 }
 
-export async function findRolloutByCwd(cwd, root = SESSIONS_ROOT) {
+// exclude: 다른 주인(스레드 창 세션)에 묶인 롤아웃 파일 — 같은 cwd라 메인 검출이 갈아타지 않게 건너뛴다.
+export async function findRolloutByCwd(cwd, root = SESSIONS_ROOT, { exclude = new Set() } = {}) {
   try {
     for (const y of await listSorted(root))
       for (const m of await listSorted(join(root, y)))
         for (const d of await listSorted(join(root, y, m)))
           for (const f of (await readdir(join(root, y, m, d))).sort().reverse()) {
             const file = join(root, y, m, d, f);
+            if (exclude.has(file)) continue;
             const meta = await readSessionMeta(file);
             if (meta?.cwd !== cwd) continue;
             const reason = auxiliaryReason(meta);
