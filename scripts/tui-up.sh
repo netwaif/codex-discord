@@ -117,6 +117,8 @@ fi
 # PATH 전파: env 셔뱅(#!/usr/bin/env node)이 tmux 서버 환경에서도 node를 찾도록.
 # 기존 tmux 서버의 maxfiles=256 상속을 피하도록 pane 안에서 soft limit을 올린다.
 # 바깥 기동 스크립트에서만 ulimit을 바꾸면 기존 서버의 자식에는 적용되지 않는다.
+# SSH_* 제거: SSH로 만든 tmux 세션의 env(SSH_CONNECTION)가 run-shell→new-session 경로로 pane에 복사되면
+# agy 1.2.1이 원격(헤드리스) 인증 경로로 빠져 "not signed in"(2026-09-11 실측). 봇 pane은 항상 로컬이다.
 if [[ -n "$SKIP_BOOT" ]]; then
   :
 elif [[ -n "$WINDOW" ]]; then
@@ -124,11 +126,11 @@ elif [[ -n "$WINDOW" ]]; then
   ENV_ARGS=()
   [[ -n "$THREAD_ID" ]] && ENV_ARGS=(-e "DISCORD_THREAD_ID=$THREAD_ID")
   $TMUX_BIN new-window -d -t "$SESSION" -n "$WINDOW" -c "$CODEX_WORKDIR" ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
-    "ulimit -Sn 8192 && PATH=\"$PATH\" exec $ENGINE_CMD"
+    "ulimit -Sn 8192 && unset SSH_CONNECTION SSH_CLIENT SSH_TTY; PATH=\"$PATH\" exec $ENGINE_CMD"
   log "$ENGINE 스레드 창 기동 ($PANE)"
 else
   $TMUX_BIN new-session -d -s "$SESSION" -c "$CODEX_WORKDIR" -x 200 -y 50 \
-    "ulimit -Sn 8192 && PATH=\"$PATH\" exec $ENGINE_CMD"
+    "ulimit -Sn 8192 && unset SSH_CONNECTION SSH_CLIENT SSH_TTY; PATH=\"$PATH\" exec $ENGINE_CMD"
   log "$ENGINE TUI 직접 기동 (셸 비경유)"
 fi
 
