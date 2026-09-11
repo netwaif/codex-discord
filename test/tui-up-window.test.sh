@@ -13,9 +13,11 @@ case "\$1" in
   list-windows) exit 0 ;;
   new-window|kill-window) exit 0 ;;
   display-message) echo codex ;;
-  capture-pane) echo "› " ;;
+  capture-pane) if [[ -f "$T/trust-pending" ]]; then echo "OpenAI Codex (v0.153.4)"; echo "Do you trust the contents of this directory?"; echo "> 1. Yes, continue"; echo "  2. No, quit"; else echo "› "; fi ;;
   send-keys)
-    if [[ "\${@: -1}" == Enter ]]; then
+    if [[ "\${@: -1}" == Enter && -f "$T/trust-pending" ]]; then
+      rm -f "$T/trust-pending"
+    elif [[ "\${@: -1}" == Enter ]]; then
       d="$T/home/.codex/sessions/2026/09/11"; mkdir -p "\$d"
       printf '{"type":"session_meta","payload":{"id":"$UUID","cwd":"$T/work","source":"cli","thread_source":"user"}}\n{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}\n' > "\$d/rollout-2026-09-11T00-00-00-$UUID.jsonl"
     fi ;;
@@ -49,6 +51,18 @@ out=$(HOME="$T/home" PATH="$T/bin:$PATH" FAKE_SESSION=1 bash "$ROOT/scripts/tui-
 grep -q -- "-n t000002 -c $T/work -e DISCORD_THREAD_ID=100 " "$T/tmux.log" && ok "new-window -e DISCORD_THREAD_ID" || ng "-e 누락: $(grep new-window "$T/tmux.log")"
 grep -q -- "send-keys -t =fake-live:t000002.0 -l \[스레드 세션\] 준비됨 한 단어로" "$T/tmux.log" && ok "프라이밍 문구 전송" || ng "프라이밍: $(grep send-keys "$T/tmux.log" | head -1)"
 grep -q "Boot check" "$T/tmux.log" && ng "Boot check 문구가 남아 있음" || ok "Boot check 대체됨"
+
+# (2c) 미신뢰 폴더 신뢰 프롬프트 → Enter 1회 뒤 더미 턴 (2026-09-12 WSL2 실기)
+: > "$T/tmux.log"; rm -rf "$T/home/.codex"; touch "$T/trust-pending"
+out=$(HOME="$T/home" PATH="$T/bin:$PATH" FAKE_SESSION=1 bash "$ROOT/scripts/tui-up.sh" "$T/env" --window t000003 2>&1); rc=$?
+[[ $rc -eq 0 ]] && ok "신뢰 프롬프트 exit 0" || ng "신뢰 프롬프트 (rc=$rc): $out"
+[[ "$out" == *"신뢰 프롬프트 감지"* ]] && ok "신뢰 프롬프트 감지 로그" || ng "감지 로그 없음: $out"
+[[ ! -f "$T/trust-pending" ]] && ok "Enter로 프롬프트 통과" || ng "프롬프트 잔류"
+n=$(grep -c "send-keys -t =fake-live:t000003.0 Enter" "$T/tmux.log")
+[[ $n -eq 2 ]] && ok "Enter 2회(신뢰 1 + 더미 턴 1)" || ng "Enter 횟수 $n"
+first=$(grep -n "send-keys" "$T/tmux.log" | head -1)
+[[ "$first" == *"Enter" ]] && ok "첫 send-keys가 Enter(더미 턴 텍스트보다 앞)" || ng "첫 send-keys: $first"
+[[ "$(tail -1 <<<"$out")" == SESSION_ID=$UUID* ]] && ok "프롬프트 뒤 롤아웃 검출" || ng "마지막 줄: $(tail -1 <<<"$out")"
 
 # (3) 잘못된 인자
 HOME="$T/home" PATH="$T/bin:$PATH" bash "$ROOT/scripts/tui-up.sh" "$T/env" --bogus >/dev/null 2>&1; [[ $? -eq 1 ]] && ok "알 수 없는 인자 exit 1" || ng "알 수 없는 인자"

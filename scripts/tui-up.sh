@@ -156,6 +156,7 @@ if [[ -z "$SKIP_BOOT" ]]; then
 # TUI 준비 대기: 입력 프롬프트(›)나 배너가 뜰 때까지 (최대 180초 —
 # 부팅 직후엔 시스템 부하로 codex 기동이 60초를 넘긴다, 2026-07-30·07-31 실측)
 READY=""
+TRUST_SENT=""
 for _ in $(seq 1 180); do
   sleep 1
   CAP=$($TMUX_BIN capture-pane -p -t "$TP" 2>/dev/null || true)
@@ -163,6 +164,17 @@ for _ in $(seq 1 180); do
     # agy 배너 "Antigravity CLI" 또는 입력 프롬프트 줄 "> "
     if grep -qE 'Antigravity CLI|^> ' <<<"$CAP"; then READY=1; break; fi
   else
+    # 미신뢰 새 폴더의 첫 화면 "Do you trust the contents of this directory?" — 배너와 함께 떠서
+    # 준비로 오판되고, 더미 턴 텍스트+Enter가 "2. No, quit"을 골라 codex가 종료된다(WSL2 실기 2026-09-12).
+    # Enter 한 번이 기본 선택 "1. Yes, continue". 선등록(botctl add → ~/.codex/config.toml)이 1차 방어, 이건 폴백.
+    if grep -qF 'Do you trust the contents' <<<"$CAP"; then
+      if [[ -z "$TRUST_SENT" ]]; then
+        $TMUX_BIN send-keys -t "$TP" Enter
+        TRUST_SENT=1
+        log "codex 디렉터리 신뢰 프롬프트 감지 — Enter(Yes, continue)"
+      fi
+      continue
+    fi
     if grep -qE '›|OpenAI Codex' <<<"$CAP"; then READY=1; break; fi
   fi
 done
