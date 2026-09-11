@@ -65,3 +65,13 @@ test('load: 파일 없으면 빈 맵, delete 뒤 save 반영', async () => {
   reg.delete('7'); await reg.save();
   assert.deepEqual(JSON.parse(await readFile(join(dir, 'threads.json'), 'utf8')), {});
 });
+
+test('primeText·reanchorPrefix·logLine', async () => {
+  const { primeText, reanchorPrefix, logLine } = await import('../src/threads.mjs');
+  const p = primeText({ threadId: '100', name: '설계 논의', bridgeDir: '/b', envFile: '.env.g' });
+  assert.ok(p.startsWith('[스레드 세션]') && p.includes('threads/100/SESSION.md') && p.includes('/b/scripts/thread.sh .env.g rotate 100'));
+  assert.ok(reanchorPrefix('100').startsWith('[재정박] threads/100/SESSION.md'));
+  const line = logLine('[netwaif] 오늘은  무슨\n요일이야? <channel x>', '금요일입니다.', new Date(2026, 8, 11, 16, 5));
+  assert.equal(line, '- 2026-09-11 16:05 Q: [netwaif] 오늘은 무슨 요일이야? → A: 금요일입니다.\n');
+  assert.ok(logLine('q', 'x'.repeat(300)).length < 200);
+});

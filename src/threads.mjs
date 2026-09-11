@@ -49,7 +49,7 @@ export class ThreadRegistry {
   entries() { return [...this.map.values()]; }
 
   // 창이 살아 있으면 그대로, 아니면 새로 띄워 등록. created=true면 첫 생성(안내 게시용).
-  async ensure(threadId) {
+  async ensure(threadId, { name = '' } = {}) {
     const id = String(threadId);
     const cur = this.map.get(id);
     if (cur && await this.paneAlive(cur.pane)) return { entry: cur, created: false };
@@ -57,11 +57,12 @@ export class ThreadRegistry {
       const again = this.map.get(id);   // 직렬 대기 중 다른 호출이 만들었을 수 있다
       if (again && again !== cur && await this.paneAlive(again.pane)) return { entry: again, created: false };
       const window = windowNameFor(id);
-      const out = await this.spawn(window);
+      const out = await this.spawn(window, { threadId: id, name });
       const hit = parseSpawnOutput(out);
       if (!hit) throw new Error(`스레드 세션 검출 실패 — tui-up 출력에 SESSION_ID 줄 없음: ${String(out).trim().split('\n').pop()}`);
-      const entry = { threadId: id, window, pane: `${this.session}:${window}.0`, sid: hit.sid, file: hit.file,
-        created: new Date().toISOString(), last: new Date().toISOString() };
+      // fresh: 새 창의 첫 사용자 메시지에 [재정박] 접두를 붙일지(기록이 있을 때) — 소비하는 쪽이 false로 내린다
+      const entry = { threadId: id, window, pane: `${this.session}:${window}.0`, sid: hit.sid, file: hit.file, name,
+        fresh: true, created: new Date().toISOString(), last: new Date().toISOString() };
       this.map.set(id, entry);
       await this.save();
       return { entry, created: true };
@@ -70,4 +71,27 @@ export class ThreadRegistry {
     this._chain = next.catch(() => {});
     return next;
   }
+}
+
+// ── A단계: 프라이밍·재정박·log.md (순수 함수)
+
+// 창의 첫 턴(더미 턴 대신). 세션에 스레드 전담·기록 정본·회전 방법을 알린다. 답은 tail이 붙기 전이라 게시되지 않는다.
+export function primeText({ threadId, name, bridgeDir, envFile }) {
+  const label = name ? ` ("${String(name).slice(0, 60)}")` : '';
+  return `[스레드 세션] 이 세션은 디스코드 스레드 ${threadId}${label} 전담이다. 기록 정본은 threads/${threadId}/SESSION.md 이고, `
+    + `세션 마감·재시작 지시를 받으면 그 파일을 갱신한 뒤 ${bridgeDir}/scripts/thread.sh ${envFile} rotate ${threadId} 를 실행한다. `
+    + `지금은 '준비됨' 한 단어로만 답해라.`;
+}
+
+// 새 창이 떴는데 기록이 이미 있으면(회전·창 사망 뒤) 첫 메시지 앞에 붙인다 — claude 봇의 [재정박]과 동일
+export function reanchorPrefix(threadId) {
+  return `[재정박] threads/${threadId}/SESSION.md 를 먼저 읽고 현재 상태와 다음 단계를 한두 문장으로 복창한 뒤 아래 메시지에 답하라.\n\n`;
+}
+
+// threads/<id>/log.md 한 줄: 메인 세션이 "스레드에서 무슨 일이 있었나"를 찾아볼 수 있게(claude 봇 Stop 훅과 같은 형식)
+export function logLine(question, answer, now = new Date()) {
+  const one = (t, n) => String(t ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
+  const pad = (n) => String(n).padStart(2, '0');
+  const ts = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  return `- ${ts} Q: ${one(question, 80)} → A: ${one(answer, 140)}\n`;
 }

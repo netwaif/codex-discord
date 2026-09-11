@@ -12,7 +12,8 @@ import { pasteToPane, paneCurrentCommand, paneHasEngine, UUID_RE } from './tmux.
 import { findRolloutByCwd, RolloutTail } from './rollout.mjs';
 import { findConversationByPane, extractPlannerResponses } from './agy-transcript.mjs';
 import { classifyMessage, ContextQueue } from './routing.mjs';
-import { ThreadRegistry } from './threads.mjs';
+import { ThreadRegistry, primeText, reanchorPrefix, logLine } from './threads.mjs';
+import { appendFile } from 'node:fs/promises';
 import { extractAttachmentMarkers, resolveUploadPath, saveIncomingAttachments } from './attachments.mjs';
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -73,7 +74,7 @@ const TUI_TRIGGER_GATE = (process.env.TUI_TRIGGER_GATE ?? 'on') !== 'off';
 // TUI 채널 아래 디스코드 스레드 = 전용 창 세션(scripts/tui-up.sh --window). off면 스레드 무시(공유 채널 배치).
 const TUI_THREADS = TUI_ENABLED && (process.env.TUI_THREADS ?? 'on') !== 'off';
 const TUI_SESSION = TUI_PANE ? TUI_PANE.split(':')[0] : null;
-const PROJECT_DIR = fileURLToPath(new URL('..', import.meta.url));
+const PROJECT_DIR = fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '');
 const TUI_UP = join(PROJECT_DIR, 'scripts', 'tui-up.sh');
 // 이 데몬이 읽은 env 파일 — 스레드 창도 같은 인스턴스 설정으로 띄운다(node --env-file=.env.<이름>)
 const ENV_FILE = process.env.TUI_ENV_FILE
@@ -112,8 +113,9 @@ let tuiSessionId = null;
 const threads = new ThreadRegistry({
   path: join(PROJECT_DIR, DATA_DIR, 'threads.json'),
   session: TUI_SESSION,
-  spawn: (window) => new Promise((resolve, reject) => {
-    execFile('/bin/bash', [TUI_UP, ENV_FILE, '--window', window], { cwd: PROJECT_DIR, timeout: 400_000 },
+  spawn: (window, { threadId, name }) => new Promise((resolve, reject) => {
+    const prime = primeText({ threadId, name, bridgeDir: PROJECT_DIR, envFile: ENV_FILE });
+    execFile('/bin/bash', [TUI_UP, ENV_FILE, '--window', window, '--thread', threadId, '--prime', prime], { cwd: PROJECT_DIR, timeout: 400_000 },
       (err, stdout, stderr) => {
         if (err) reject(new Error(`스레드 창 기동 실패(tui-up): ${String(stderr || stdout).trim().split('\n').pop()}`));
         else resolve(stdout);
@@ -121,7 +123,24 @@ const threads = new ThreadRegistry({
   }),
   paneAlive: (pane) => paneHasEngine(pane, ENGINE),
 });
-const threadTails = new Map();   // threadId → { tail, sid }
+const threadTails = new Map();   // threadId → { tail, sid, lastQ }
+
+const threadDir = (tid) => join(WORKDIR, 'threads', String(tid));
+
+// 스레드 답 게시 + threads/<id>/log.md 한 줄(메인 세션이 스레드 일을 찾아볼 수 있게)
+async function relayThreadReply(tid, threadChannel, text) {
+  await relayReply(threadChannel, text);
+  try {
+    await mkdir(threadDir(tid), { recursive: true });
+    await appendFile(join(threadDir(tid), 'log.md'), logLine(threadTails.get(tid)?.lastQ ?? '', text));
+  } catch (err) { console.error('log.md 기록 실패:', err.message); }
+}
+
+// 창이 새로 떴을 때: threads/<id>/ 보장 + 담당 안내 게시
+async function announceThread(threadChannel, entry) {
+  await mkdir(threadDir(entry.threadId), { recursive: true }).catch(() => {});
+  await threadChannel.send({ content: `이 스레드는 전용 세션 \`${entry.window}\`이 담당합니다 (tmux 창 \`${entry.window}\`).`, allowedMentions: { parse: [] } }).catch(() => {});
+}
 const threadQueues = new Map();  // threadId → ContextQueue
 
 // 스레드 창의 세션 파일 tail. 레지스트리의 파일(창 생성 때 tui-up이 검출)이 정본이고,
@@ -140,8 +159,8 @@ async function ensureThreadTail(threadChannel, entry) {
   if (cur && cur.sid === sid) return;
   cur?.tail.stop();
   const tail = new RolloutTail(file, ENGINE === 'agy' ? { extract: extractPlannerResponses } : {});
-  await tail.start((text) => relayReply(threadChannel, text));
-  threadTails.set(entry.threadId, { tail, sid });
+  await tail.start((text) => relayThreadReply(entry.threadId, threadChannel, text));
+  threadTails.set(entry.threadId, { tail, sid, lastQ: cur?.lastQ ?? '' });
   if (sid !== entry.sid || file !== entry.file) { entry.sid = sid; entry.file = file; await threads.save(); }
   console.log(`스레드 tail 연결: ${entry.window} → 세션 ${sid}`);
 }
@@ -261,13 +280,19 @@ client.on('messageCreate', async (message) => {
     enqueue(tid, async () => {
       let block = null;
       try {
-        const { entry, created } = await threads.ensure(tid);
-        if (created) {
-          await message.channel.send({ content: `이 스레드는 전용 세션 \`${entry.window}\`이 담당합니다 (tmux 창 \`${entry.window}\`).`, allowedMentions: { parse: [] } }).catch(() => {});
-        }
+        const { entry, created } = await threads.ensure(tid, { name: message.channel.name });
+        if (created) await announceThread(message.channel, entry);
         await ensureThreadTail(message.channel, entry);
         block = queue.drain(speaker, await withAttachments(message, message.cleanContent));
-        await pasteToPane(entry.pane, block);
+        let text = block;
+        if (entry.fresh) {
+          // 새 창인데 기록이 있으면(회전·창 사망 뒤) SESSION.md부터 읽게 — claude 봇의 [재정박]
+          const hasRecord = await stat(join(threadDir(tid), 'SESSION.md')).then(() => true, () => false);
+          if (hasRecord) text = reanchorPrefix(tid) + block;
+          entry.fresh = false;
+        }
+        await pasteToPane(entry.pane, text);
+        threadTails.get(tid).lastQ = block;
         entry.last = new Date().toISOString();
         await threads.save();
       } catch (err) {
@@ -359,6 +384,20 @@ client.on('messageCreate', async (message) => {
       await message.channel.send(`⚠️ ${String(err.message ?? err).slice(0, 1500)}`).catch(() => {});
     } finally {
       clearInterval(typing);
+    }
+  });
+});
+
+// 스레드가 생기면(사용자가 만들었든 thread.sh open이든) 창을 미리 띄우고 담당 안내 — 첫 답이 빨라진다
+client.on('threadCreate', async (thread, newlyCreated) => {
+  if (!TUI_THREADS || !newlyCreated || thread.parentId !== TUI_CHANNEL_ID) return;
+  enqueue(thread.id, async () => {
+    try {
+      const { entry, created } = await threads.ensure(thread.id, { name: thread.name });
+      if (created) await announceThread(thread, entry);
+      await ensureThreadTail(thread, entry);
+    } catch (err) {
+      await thread.send({ content: `⚠️ [스레드 세션] ${String(err.message ?? err).slice(0, 1500)}`, allowedMentions: { parse: [] } }).catch(() => {});
     }
   });
 });
