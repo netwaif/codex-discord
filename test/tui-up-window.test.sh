@@ -17,7 +17,7 @@ case "\$1" in
   send-keys)
     if [[ "\${@: -1}" == Enter ]]; then
       d="$T/home/.codex/sessions/2026/09/11"; mkdir -p "\$d"
-      printf '{"type":"session_meta","payload":{"id":"$UUID","cwd":"$T/work","source":"cli","thread_source":"user"}}\n' > "\$d/rollout-2026-09-11T00-00-00-$UUID.jsonl"
+      printf '{"type":"session_meta","payload":{"id":"$UUID","cwd":"$T/work","source":"cli","thread_source":"user"}}\n{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}\n' > "\$d/rollout-2026-09-11T00-00-00-$UUID.jsonl"
     fi ;;
 esac
 exit 0

@@ -63,6 +63,18 @@ fi
 
 log() { echo "[$(date '+%F %T')] $*"; }
 
+# 창 모드: 데몬 tail이 붙기 전에 더미 턴의 답이 파일에 기록되길 기다린다(최대 90초) —
+# 안 기다리면 "System online and ready." 같은 부팅 답이 스레드에 게시된다(2026-09-11 실측).
+wait_boot_reply() {
+  [[ -n "$WINDOW" && -z "$SKIP_BOOT" ]] || return 0
+  local f="$1" pat="$2"
+  for _ in $(seq 1 90); do
+    grep -qE "$pat" "$f" 2>/dev/null && { log "부팅 답 기록 확인"; return 0; }
+    sleep 1
+  done
+  log "경고: 부팅 답이 90초 내 기록되지 않음 — 스레드에 부팅 답이 한 번 보일 수 있음"
+}
+
 # 이미 codex가 떠 있으면 아무것도 하지 않는다 (멱등)
 # npm 배포판은 codex가 `#!/usr/bin/env node` 런처라 pane_current_command가 node로
 # 잡힌다(2026-08-05 E2E 실측) — 직접 실행 세션에서 node면 codex 런처다.
@@ -173,6 +185,7 @@ if [[ "$ENGINE" == agy ]]; then
     NEWDIR=$(find "$BRAIN" -mindepth 1 -maxdepth 1 -type d -newer "$STAMP" 2>/dev/null | head -1 || true)
     if [[ -n "$NEWDIR" && -f "$NEWDIR/.system_generated/logs/transcript.jsonl" ]]; then
       log "agy 대화 감지(brain): $(basename "$NEWDIR")"
+      wait_boot_reply "$NEWDIR/.system_generated/logs/transcript.jsonl" '"PLANNER_RESPONSE".*"DONE"|"DONE".*"PLANNER_RESPONSE"'
       log "준비 완료"
       echo "SESSION_ID=$(basename "$NEWDIR") FILE=$NEWDIR/.system_generated/logs/transcript.jsonl"
       exit 0
@@ -203,6 +216,7 @@ for i in $(seq 1 180); do
   if [[ -n "$FILE" ]]; then
     SID=$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<<"$FILE" | tail -1 || true)
     log "codex 세션 감지(롤아웃): ${SID:-확인불가} — $FILE"
+    wait_boot_reply "$FILE" '"role":"assistant"'
     log "준비 완료"
     echo "SESSION_ID=${SID:-} FILE=$FILE"
     exit 0
