@@ -73,3 +73,7 @@ test('ContextQueue: maxChars 초과 시 오래된 항목부터 버리고 생략 
   assert.ok(!block.includes('[a]'));
   assert.ok(block.endsWith('[c] 트리거'));
 });
+
+test('시스템 메시지(스레드 시작 알림 등)는 허용 사용자여도 ignore', () => {
+  assert.equal(classifyMessage({ isMe: false, isBot: false, isSystem: true, allowed: true, mentionsMe: true, mentionsOthers: false, content: '테스트-1' }), 'ignore');
+});

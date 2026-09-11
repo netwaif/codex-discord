@@ -1,7 +1,8 @@
 import { fileURLToPath } from 'node:url';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { unlinkSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { execFile } from 'node:child_process';
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import { SessionStore } from './sessions.mjs';
 import { runCodexTurn, killActiveCodexChildren } from './codex.mjs';
@@ -11,6 +12,7 @@ import { pasteToPane, paneCurrentCommand, paneHasEngine, UUID_RE } from './tmux.
 import { findRolloutByCwd, RolloutTail } from './rollout.mjs';
 import { findConversationByPane, extractPlannerResponses } from './agy-transcript.mjs';
 import { classifyMessage, ContextQueue } from './routing.mjs';
+import { ThreadRegistry } from './threads.mjs';
 import { extractAttachmentMarkers, resolveUploadPath, saveIncomingAttachments } from './attachments.mjs';
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -68,6 +70,15 @@ const TUI_ENABLED = Boolean(TUI_PANE && TUI_CHANNEL_ID);
 // TUI 채널이 이 봇 전용이면 off — 호명(멘션·TRIGGER_NAME) 없이 모든 메시지에 응답.
 // 기본 on = 기존 동작(공유 수다 채널을 TUI 채널로 쓰는 배치의 호명 게이트) 유지.
 const TUI_TRIGGER_GATE = (process.env.TUI_TRIGGER_GATE ?? 'on') !== 'off';
+// TUI 채널 아래 디스코드 스레드 = 전용 창 세션(scripts/tui-up.sh --window). off면 스레드 무시(공유 채널 배치).
+const TUI_THREADS = TUI_ENABLED && (process.env.TUI_THREADS ?? 'on') !== 'off';
+const TUI_SESSION = TUI_PANE ? TUI_PANE.split(':')[0] : null;
+const PROJECT_DIR = fileURLToPath(new URL('..', import.meta.url));
+const TUI_UP = join(PROJECT_DIR, 'scripts', 'tui-up.sh');
+// 이 데몬이 읽은 env 파일 — 스레드 창도 같은 인스턴스 설정으로 띄운다(node --env-file=.env.<이름>)
+const ENV_FILE = process.env.TUI_ENV_FILE
+  ?? process.execArgv.find((a) => a.startsWith('--env-file='))?.slice('--env-file='.length)
+  ?? '.env';
 
 const store = new SessionStore(
   fileURLToPath(new URL(`../${DATA_DIR}/sessions.json`, import.meta.url)),
@@ -96,6 +107,62 @@ const client = new Client({
 const tuiQueue = new ContextQueue();
 let tuiTail = null;
 let tuiSessionId = null;
+
+// 스레드 = 전용 창 세션. 레지스트리는 창 생성(tui-up --window)과 pane 생존 판정을 주입받는다.
+const threads = new ThreadRegistry({
+  path: join(PROJECT_DIR, DATA_DIR, 'threads.json'),
+  session: TUI_SESSION,
+  spawn: (window) => new Promise((resolve, reject) => {
+    execFile('/bin/bash', [TUI_UP, ENV_FILE, '--window', window], { cwd: PROJECT_DIR, timeout: 400_000 },
+      (err, stdout, stderr) => {
+        if (err) reject(new Error(`스레드 창 기동 실패(tui-up): ${String(stderr || stdout).trim().split('\n').pop()}`));
+        else resolve(stdout);
+      });
+  }),
+  paneAlive: (pane) => paneHasEngine(pane, ENGINE),
+});
+const threadTails = new Map();   // threadId → { tail, sid }
+const threadQueues = new Map();  // threadId → ContextQueue
+
+// 스레드 창의 세션 파일 tail. 레지스트리의 파일(창 생성 때 tui-up이 검출)이 정본이고,
+// 그 파일이 사라졌을 때만 pane 기준으로 재검출한다(agy의 brain-최신 폴백이 남의 대화를 집을 수 있어 평소엔 안 쓴다).
+async function ensureThreadTail(threadChannel, entry) {
+  let { sid, file } = entry;
+  const exists = await stat(file).then(() => true, () => false);
+  if (!exists) {
+    const hit = ENGINE === 'agy'
+      ? await findConversationByPane(entry.pane)
+      : await findRolloutByCwd(WORKDIR, undefined, { exclude: new Set([tuiTail?.filePath, ...threads.entries().filter((e) => e !== entry).map((e) => e.file)].filter(Boolean)) });
+    if (!hit) throw new Error(`스레드 세션 파일 없음: ${file}`);
+    ({ sid, file } = { sid: hit.sid ?? sid, file: hit.file });
+  }
+  const cur = threadTails.get(entry.threadId);
+  if (cur && cur.sid === sid) return;
+  cur?.tail.stop();
+  const tail = new RolloutTail(file, ENGINE === 'agy' ? { extract: extractPlannerResponses } : {});
+  await tail.start((text) => relayReply(threadChannel, text));
+  threadTails.set(entry.threadId, { tail, sid });
+  if (sid !== entry.sid || file !== entry.file) { entry.sid = sid; entry.file = file; await threads.save(); }
+  console.log(`스레드 tail 연결: ${entry.window} → 세션 ${sid}`);
+}
+
+// 데몬 재시작: 창이 살아 있는 스레드는 재부착, 죽은 스레드는 항목 폐기(다음 메시지에 새로 생성)
+async function reattachThreads() {
+  let kept = 0, dropped = 0;
+  for (const entry of threads.entries()) {
+    try {
+      if (!(await paneHasEngine(entry.pane, ENGINE))) throw new Error('창 없음');
+      const ch = await client.channels.fetch(entry.threadId);
+      await ensureThreadTail(ch, entry);
+      kept++;
+    } catch (err) {
+      console.log(`스레드 폐기: ${entry.window} — ${err.message}`);
+      threads.delete(entry.threadId);
+      dropped++;
+    }
+  }
+  if (kept || dropped) { await threads.save(); console.log(`스레드 재부착 ${kept} / 폐기 ${dropped}`); }
+}
 
 // codex 답변을 채널로 릴레이: [[첨부: 경로]] 마커는 걷어내 검증 후 파일로 첨부
 async function relayReply(channel, raw) {
@@ -148,7 +215,7 @@ async function ensureTuiTail(channel) {
   }
   const hit = ENGINE === 'agy'
     ? await findConversationByPane(TUI_PANE)
-    : await findRolloutByCwd(WORKDIR);
+    : await findRolloutByCwd(WORKDIR, undefined, { exclude: new Set(threads.entries().map((e) => e.file)) });
   if (!hit) {
     throw new Error(ENGINE === 'agy'
       ? `agy 대화를 특정하지 못함 — pane(${TUI_PANE})의 presence 락·배너·brain 최신 모두 실패. TUI에서 메시지를 한 번 보낸 뒤 다시 시도하세요`
@@ -173,11 +240,49 @@ const mentionsAnyone = (m) => m.mentions.users.size > 0
   || m.mentions.roles.some((r) => r.tags?.botId);
 
 client.on('messageCreate', async (message) => {
+  // TUI 채널 아래 스레드 → 전용 창 세션 (CHANNEL_IDS allowlist보다 먼저 — 스레드 ID는 목록에 없다)
+  if (TUI_THREADS && message.channel.isThread?.() && message.channel.parentId === TUI_CHANNEL_ID) {
+    const verdict = classifyMessage({
+      isMe: message.author.id === client.user.id,
+      isBot: message.author.bot,
+      isSystem: Boolean(message.system),
+      allowed: ALLOWED.has(message.author.id),
+      mentionsMe: mentionsMe(message),
+      mentionsOthers: mentionsAnyone(message) && !mentionsMe(message),
+      content: message.content ?? '',
+      triggerName: TUI_TRIGGER_GATE ? TRIGGER_NAME : '',
+    });
+    if (verdict === 'ignore') return;
+    const tid = message.channelId;
+    const speaker = message.member?.displayName ?? message.author.username;
+    let queue = threadQueues.get(tid);
+    if (!queue) { queue = new ContextQueue(); threadQueues.set(tid, queue); }
+    if (verdict === 'context') { queue.push(speaker, await withAttachments(message, message.cleanContent)); return; }
+    enqueue(tid, async () => {
+      let block = null;
+      try {
+        const { entry, created } = await threads.ensure(tid);
+        if (created) {
+          await message.channel.send({ content: `이 스레드는 전용 세션 \`${entry.window}\`이 담당합니다 (tmux 창 \`${entry.window}\`).`, allowedMentions: { parse: [] } }).catch(() => {});
+        }
+        await ensureThreadTail(message.channel, entry);
+        block = queue.drain(speaker, await withAttachments(message, message.cleanContent));
+        await pasteToPane(entry.pane, block);
+        entry.last = new Date().toISOString();
+        await threads.save();
+      } catch (err) {
+        if (block !== null) queue.restore(block);
+        await message.channel.send({ content: `⚠️ [스레드 세션] ${String(err.message ?? err).slice(0, 1500)}`, allowedMentions: { parse: [] } }).catch(() => {});
+      }
+    });
+    return;
+  }
   if (CHANNEL_ALLOW.size > 0 && !CHANNEL_ALLOW.has(message.channelId)) return;
   if (TUI_ENABLED && message.channelId === TUI_CHANNEL_ID) {
     const verdict = classifyMessage({
       isMe: message.author.id === client.user.id,
       isBot: message.author.bot,
+      isSystem: Boolean(message.system),
       allowed: ALLOWED.has(message.author.id),
       mentionsMe: mentionsMe(message),
       mentionsOthers: mentionsAnyone(message) && !mentionsMe(message),
@@ -212,6 +317,7 @@ client.on('messageCreate', async (message) => {
     const verdict = classifyMessage({
       isMe: message.author.id === client.user.id,
       isBot: message.author.bot,
+      isSystem: Boolean(message.system),
       allowed: ALLOWED.has(message.author.id),
       mentionsMe: mentionsMe(message),
       mentionsOthers: mentionsAnyone(message) && !mentionsMe(message),
@@ -224,7 +330,7 @@ client.on('messageCreate', async (message) => {
     if (!queue) { queue = new ContextQueue(); sharedQueues.set(message.channelId, queue); }
     if (verdict === 'context') { queue.push(speaker, message.cleanContent ?? ''); return; }
     sharedCtx = { queue, speaker };
-  } else if (message.author.bot) return;
+  } else if (message.author.bot || message.system) return;
   if (!ALLOWED.has(message.author.id)) return;
   // 다른 봇(예: Claude)을 멘션한 메시지는 그 봇의 몫 — 가로채지 않는다
   if (!sharedCtx && mentionsAnyone(message) && !mentionsMe(message)) return;
@@ -257,8 +363,11 @@ client.on('messageCreate', async (message) => {
   });
 });
 
-client.once('clientReady', () => {
+client.once('clientReady', async () => {
   console.log(`로그인: ${client.user.tag} / 엔진 ${ENGINE} / 허용 사용자 ${ALLOWED.size}명 / 작업폴더 ${WORKDIR}`);
+  if (TUI_THREADS) {
+    try { await threads.load(); await reattachThreads(); } catch (err) { console.error('스레드 재부착 실패:', err.message); }
+  }
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {

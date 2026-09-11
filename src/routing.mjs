@@ -1,4 +1,7 @@
-export function classifyMessage({ isMe, isBot, allowed, mentionsMe, mentionsOthers, content, triggerName = '코덱스' }) {
+export function classifyMessage({ isMe, isBot, isSystem = false, allowed, mentionsMe, mentionsOthers, content, triggerName = '코덱스' }) {
+  // 디스코드 시스템 메시지(스레드 시작·핀·가입 알림 등)는 사람 발화가 아니다 — 2026-09-11 실측:
+  // "스레드를 시작하셨어요"가 부모 채널에 content=스레드명으로 들어와 메인 TUI에 붙여넣어졌다.
+  if (isSystem) return 'ignore';
   if (isMe) return 'ignore';
   if (isBot) return 'context';
   if (!allowed) return 'ignore';
