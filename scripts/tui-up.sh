@@ -64,7 +64,13 @@ else
     echo "오류: codex를 찾을 수 없음 — .env에 CODEX_BIN을 지정하거나 PATH에 codex를 두세요" >&2
     exit 1
   fi
-  ENGINE_CMD="$CODEX_BIN -s workspace-write -c sandbox_workspace_write.network_access=true"
+  if [[ "${CODEX_TUI_SANDBOX:-}" == off ]]; then
+    # bwrap이 안 도는 환경(도커 컨테이너 — 네임스페이스 생성 거부): 셸 명령마다 "샌드박스 밖 실행" 승인이 떠
+    # 무인 pane이 멈춘다(2026-09-11 실측: thread.sh open이 승인 대기). 컨테이너가 바깥 샌드박스이므로 codex 것을 끈다.
+    ENGINE_CMD="$CODEX_BIN --dangerously-bypass-approvals-and-sandbox"
+  else
+    ENGINE_CMD="$CODEX_BIN -s workspace-write -c sandbox_workspace_write.network_access=true"
+  fi
   # 프레시 설치에서 codex hooks 신뢰 프롬프트가 무인 봇 기동을 막는다 — 훅은 사용자 자신의 설치분이라
   # 자동화용 공식 플래그로 넘긴다(디렉터리 신뢰는 install.sh가 config.toml에 선등록). 2026-09-07 실측.
   [[ -f "$HOME/.codex/hooks.json" ]] && ENGINE_CMD="$ENGINE_CMD --dangerously-bypass-hook-trust"
