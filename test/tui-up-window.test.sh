@@ -11,11 +11,15 @@ echo "tmux \$*" >> "$T/tmux.log"
 case "\$1" in
   has-session) [[ -n "\${FAKE_SESSION:-}" ]]; exit \$? ;;
   list-windows) exit 0 ;;
-  new-window|kill-window) exit 0 ;;
+  list-panes) [[ ! -f "$T/update-done" ]]; exit \$? ;;
+  new-window) rm -f "$T/update-done"; exit 0 ;;
+  kill-window) exit 0 ;;
   display-message) echo codex ;;
-  capture-pane) if [[ -f "$T/trust-pending" ]]; then echo "OpenAI Codex (v0.153.4)"; echo "Do you trust the contents of this directory?"; echo "> 1. Yes, continue"; echo "  2. No, quit"; else echo "› "; fi ;;
+  capture-pane) if [[ -f "$T/update-done" ]]; then exit 1; elif [[ -f "$T/update-pending" ]]; then echo "OpenAI Codex (v0.153.4)"; echo "› Ask Codex to do anything"; echo "  ✨ Update available! 0.153.4 -> 0.154.0"; echo "› 1. Update now (runs \`sh -c '...'\`)"; echo "  2. Skip"; echo "  3. Skip until next version"; echo "  Press enter to continue"; elif [[ -f "$T/trust-pending" ]]; then echo "OpenAI Codex (v0.153.4)"; echo "Do you trust the contents of this directory?"; echo "> 1. Yes, continue"; echo "  2. No, quit"; else echo "› "; fi ;;
   send-keys)
-    if [[ "\${@: -1}" == Enter && -f "$T/trust-pending" ]]; then
+    if [[ "\${@: -1}" == Enter && -f "$T/update-pending" ]]; then
+      rm -f "$T/update-pending"; touch "$T/update-done"   # 설치 뒤 codex 종료 → pane 소멸
+    elif [[ "\${@: -1}" == Enter && -f "$T/trust-pending" ]]; then
       rm -f "$T/trust-pending"
     elif [[ "\${@: -1}" == Enter ]]; then
       d="$T/home/.codex/sessions/2026/09/11"; mkdir -p "\$d"
@@ -63,6 +67,21 @@ n=$(grep -c "send-keys -t =fake-live:t000003.0 Enter" "$T/tmux.log")
 first=$(grep -n "send-keys" "$T/tmux.log" | head -1)
 [[ "$first" == *"Enter" ]] && ok "첫 send-keys가 Enter(더미 턴 텍스트보다 앞)" || ng "첫 send-keys: $first"
 [[ "$(tail -1 <<<"$out")" == SESSION_ID=$UUID* ]] && ok "프롬프트 뒤 롤아웃 검출" || ng "마지막 줄: $(tail -1 <<<"$out")"
+
+# (2d) 업데이트 프롬프트 → Enter(Update now) → pane 소멸 → 1회 재기동 → 더미 턴 (2026-09-12, 0.153.4→0.154.0 재현)
+: > "$T/tmux.log"; rm -rf "$T/home/.codex"; rm -f "$T/update-done"; touch "$T/update-pending"
+out=$(HOME="$T/home" PATH="$T/bin:$PATH" FAKE_SESSION=1 bash "$ROOT/scripts/tui-up.sh" "$T/env" --window t000004 2>&1); rc=$?
+[[ $rc -eq 0 ]] && ok "업데이트 프롬프트 exit 0" || ng "업데이트 프롬프트 (rc=$rc): $out"
+[[ "$out" == *"업데이트 프롬프트 감지"* && "$out" == *"업데이트 완료(종료 확인) — 재기동"* ]] && ok "감지·재기동 로그" || ng "로그: $out"
+n=$(grep -c "tmux new-window" "$T/tmux.log"); [[ $n -eq 2 ]] && ok "new-window 2회(원래 1 + 재기동 1)" || ng "new-window 횟수 $n"
+n=$(grep -c "send-keys -t =fake-live:t000004.0 Enter" "$T/tmux.log"); [[ $n -eq 2 ]] && ok "Enter 2회(업데이트 1 + 더미 턴 1)" || ng "Enter 횟수 $n"
+[[ "$(tail -1 <<<"$out")" == SESSION_ID=$UUID* ]] && ok "재기동 뒤 롤아웃 검출" || ng "마지막 줄: $(tail -1 <<<"$out")"
+
+# (2e) 재기동에서도 업데이트 프롬프트(CODEX_BIN이 옛 버전) → 무한 루프 없이 exit 1
+: > "$T/tmux.log"; rm -rf "$T/home/.codex"; rm -f "$T/update-done"; touch "$T/update-pending"
+out=$(HOME="$T/home" PATH="$T/bin:$PATH" FAKE_SESSION=1 CODEX_UPDATE_RETRIED=1 bash "$ROOT/scripts/tui-up.sh" "$T/env" --window t000005 2>&1); rc=$?
+[[ $rc -eq 1 && "$out" == *"재기동에서도"* ]] && ok "재시도 상한 exit 1" || ng "재시도 상한 (rc=$rc): $out"
+n=$(grep -c "tmux new-window" "$T/tmux.log"); [[ $n -eq 1 ]] && ok "재기동 안 함(new-window 1회)" || ng "new-window 횟수 $n"
 
 # (3) 잘못된 인자
 HOME="$T/home" PATH="$T/bin:$PATH" bash "$ROOT/scripts/tui-up.sh" "$T/env" --bogus >/dev/null 2>&1; [[ $? -eq 1 ]] && ok "알 수 없는 인자 exit 1" || ng "알 수 없는 인자"

@@ -249,7 +249,8 @@ async function ensureTuiTail(channel) {
   // (2026-08-05 E2E 실측) — pane 프로세스 트리에서 엔진 실존을 본다.
   if (!(await paneHasEngine(TUI_PANE, ENGINE))) {
     const cmd = await paneCurrentCommand(TUI_PANE);
-    throw new Error(`TUI pane(${TUI_PANE})에서 ${ENGINE} 프로세스를 찾지 못함(현재: ${cmd}) — 셸에 명령이 입력되는 것을 막기 위해 중단`);
+    // 원인은 대개 TUI가 내려간 것(부팅 중 codex 업데이트 프롬프트 등, 2026-08-27) — 멤버가 바로 복구할 수 있게 명령·로그를 붙인다.
+    throw new Error(`TUI pane(${TUI_PANE})에서 ${ENGINE} 프로세스를 찾지 못함(현재: ${cmd}) — TUI가 내려간 상태라 중단(셸에 명령이 입력되는 것을 막음). 복구: 터미널에서 \`${TUI_UP} ${ENV_FILE}\` 실행 후 다시 말 걸기. 기동 로그: ${PROJECT_DIR}/logs/`);
   }
   const hit = ENGINE === 'agy'
     ? await findConversationByPane(TUI_PANE)

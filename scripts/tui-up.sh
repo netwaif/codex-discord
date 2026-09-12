@@ -13,6 +13,7 @@ ENV_FILE="${1:-.env}"
 #   세션이 없으면 exit 1(메인 TUI가 먼저). 끝에 `SESSION_ID=<sid> FILE=<경로>` 한 줄을 찍어 데몬이 읽는다.
 # --thread <스레드ID>: 창 환경변수 DISCORD_THREAD_ID로 심는다 / --prime "<문구>": 더미 턴 대신 이 문구를 첫 턴으로 보낸다(스레드 프라이밍).
 WINDOW=""; THREAD_ID=""; PRIME=""
+ORIG_ARGS=("$@")   # 업데이트 뒤 재기동(exec)용 원본 인자
 shift $(( $# > 0 ? 1 : 0 ))
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -77,6 +78,17 @@ else
 fi
 
 log() { echo "[$(date '+%F %T')] $*"; }
+
+# 기동 실패를 조용히 넘기지 않는다 — 웹훅이 있으면 한 줄 알림(탐색 순서는 tui-restart.sh와 동일).
+# 웹훅이 없으면 로그뿐이지만, 데몬이 다음 호명 때 복구 안내를 ⚠️로 게시한다(index.mjs ensureTuiTail).
+notify_fail() {
+  local hook="${BOT_RESTART_WEBHOOK:-}"
+  [[ -z "$hook" && -f "$HOME/.config/folder-bot/config.json" ]] && hook=$(sed -nE 's/.*"webhook_url" *: *"([^"]+)".*/\1/p' "$HOME/.config/folder-bot/config.json" | head -1)
+  [[ -z "$hook" && -f "$HOME/.config/usage-coach/discord.json" ]] && hook=$(sed -nE 's/.*"webhook_url" *: *"([^"]+)".*/\1/p' "$HOME/.config/usage-coach/discord.json" | head -1)
+  [[ -n "$hook" ]] || return 0
+  curl -sS -m 10 -H 'Content-Type: application/json' \
+    -d "{\"content\":\"⚠️ $SESSION TUI 기동 실패 — $1. 복구: $0 $(basename "$ENV_FILE") / 로그: $PROJECT_DIR/logs/\"}" "$hook" >/dev/null || true
+}
 
 # 창 모드: 데몬 tail이 붙기 전에 더미 턴의 답이 파일에 기록되길 기다린다(최대 90초) —
 # 안 기다리면 "System online and ready." 같은 부팅 답이 스레드에 게시된다(2026-09-11 실측).
@@ -157,6 +169,7 @@ if [[ -z "$SKIP_BOOT" ]]; then
 # 부팅 직후엔 시스템 부하로 codex 기동이 60초를 넘긴다, 2026-07-30·07-31 실측)
 READY=""
 TRUST_SENT=""
+UPDATE_SENT=""
 for _ in $(seq 1 180); do
   sleep 1
   CAP=$($TMUX_BIN capture-pane -p -t "$TP" 2>/dev/null || true)
@@ -167,6 +180,17 @@ for _ in $(seq 1 180); do
     # 미신뢰 새 폴더의 첫 화면 "Do you trust the contents of this directory?" — 배너와 함께 떠서
     # 준비로 오판되고, 더미 턴 텍스트+Enter가 "2. No, quit"을 골라 codex가 종료된다(WSL2 실기 2026-09-12).
     # Enter 한 번이 기본 선택 "1. Yes, continue". 선등록(botctl add → ~/.codex/config.toml)이 1차 방어, 이건 폴백.
+    # 업데이트 프롬프트 — 배너·› 와 함께 떠서 준비로 오판되고, 더미 턴 Enter가 "1. Update now"를 골라
+    # 설치 뒤 codex가 종료(exit 0)하면서 pane·세션이 사라진다(2026-08-27 부팅 실측, 0.153.4→0.154.0으로 재현 09-12:
+    # "✨ Update available! …" / "› 1. Update now (runs …)" / "2. Skip" / "3. Skip until next version" / Enter →
+    # "Update ran successfully! Please restart Codex."). 억제(check_for_update_on_startup=false) 대신 업데이트를
+    # 받아들이고 종료를 기다린 뒤 1회 재기동한다(사용자 결정 2026-09-12). 아래 루프 뒤 처리.
+    if grep -qF 'Update available!' <<<"$CAP"; then
+      $TMUX_BIN send-keys -t "$TP" Enter
+      UPDATE_SENT=1
+      log "codex 업데이트 프롬프트 감지 — Enter(Update now), 설치·종료 대기(최대 600초)"
+      break
+    fi
     if grep -qF 'Do you trust the contents' <<<"$CAP"; then
       if [[ -z "$TRUST_SENT" ]]; then
         $TMUX_BIN send-keys -t "$TP" Enter
@@ -178,8 +202,33 @@ for _ in $(seq 1 180); do
     if grep -qE '›|OpenAI Codex' <<<"$CAP"; then READY=1; break; fi
   fi
 done
+if [[ -n "$UPDATE_SENT" ]]; then
+  UPDATED=""
+  for _ in $(seq 1 600); do
+    sleep 1
+    if ! $TMUX_BIN list-panes -t "$TP" >/dev/null 2>&1; then UPDATED=1; break; fi
+    # 업데이트가 실패해 codex가 프롬프트 없이 살아 있으면 그대로 준비로 본다
+    CAP=$($TMUX_BIN capture-pane -p -t "$TP" 2>/dev/null || true)
+    if ! grep -qE 'Update available!|Updating Codex' <<<"$CAP" && grep -qE '›|OpenAI Codex' <<<"$CAP"; then READY=1; break; fi
+  done
+  if [[ -n "$UPDATED" ]]; then
+    if [[ -n "${CODEX_UPDATE_RETRIED:-}" ]]; then
+      log "실패: 업데이트 뒤 재기동에서도 업데이트 프롬프트·종료 — CODEX_BIN 경로가 옛 버전을 가리키는지 확인"
+      notify_fail "업데이트 후 재기동 실패"
+      exit 1
+    fi
+    log "codex 업데이트 완료(종료 확인) — 재기동"
+    CODEX_UPDATE_RETRIED=1 exec bash "$0" "${ORIG_ARGS[@]}"
+  fi
+  if [[ -z "$READY" ]]; then
+    log "실패: 업데이트 600초 내 미종료 — pane 화면 확인 필요"
+    notify_fail "업데이트 600초 내 미종료"
+    exit 1
+  fi
+fi
 if [[ -z "$READY" ]]; then
   log "실패: 180초 내 TUI 미기동 — pane 화면 확인 필요"
+  notify_fail "180초 내 TUI 미기동"
   exit 1
 fi
 log "TUI 준비 확인"
@@ -230,6 +279,7 @@ if [[ "$ENGINE" == agy ]]; then
     fi
   done
   log "경고: brain 대화 디렉터리 180초 내 미생성 — 첫 호명 시 Discord 경고가 뜨면 TUI에 메시지 한 번 보낼 것"
+  notify_fail "agy 대화 180초 내 미생성"
   exit 1
 fi
 
@@ -262,4 +312,5 @@ for i in $(seq 1 180); do
   fi
 done
 log "경고: cwd 일치 롤아웃 파일 180초 내 미생성 — 첫 호명 시 Discord 경고가 뜨면 TUI에 메시지 한 번 보낼 것"
+notify_fail "롤아웃 180초 내 미생성"
 exit 1
